@@ -13,6 +13,10 @@ app.use(cors());
 const API_KEY = process.env.FLOW_API_KEY;
 const SECRET_KEY = process.env.FLOW_SECRET_KEY;
 const FLOW_URL = 'https://sandbox.flow.cl/api/payment/create'; // Usa sandbox si es necesario
+const { createClient } = require('@supabase/supabase-js');
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // Utilidad para firmar los parámetros
 function signParams(params, secretKey) {
@@ -25,10 +29,18 @@ function signParams(params, secretKey) {
     return crypto.createHmac('sha256', secretKey).update(stringToSign).digest('hex');
 }
 // Endpoint para recibir confirmación de pago de FLOW
-app.post('/api/flow-confirm', (req, res) => {
-  // Aquí puedes procesar la notificación, actualizar el pedido, etc.
-  // Por ahora solo responde 200 para que FLOW no marque error
-  res.status(200).send('OK');
+app.post('/api/flow-confirm', async (req, res) => {
+  try {
+    const { commerceOrder } = req.body; // FLOW envía el pedido_id aquí
+    await supabase
+      .from('pedidos')
+      .update({ estado: 'Pagado' })
+      .eq('id', commerceOrder);
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error actualizando pedido:', error);
+    res.status(500).send('Error');
+  }
 });
 
 app.post('/api/flow-order', async (req, res) => {
@@ -74,6 +86,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log('Backend FLOW escuchando en puerto', PORT);
 });
+
 
 
 
