@@ -29,48 +29,45 @@ function signParams(params, secretKey) {
     return crypto.createHmac('sha256', secretKey).update(stringToSign).digest('hex');
 }
 // Endpoint para recibir confirmación de pago de FLOW
-app.post('/api/flow-confirm', async (req, res) => {
-  try {
-    const { token } = req.body;
-
-    if (!token) {
-      return res.status(400).json({ error: "Token no recibido" });
-    }
-
-    // Llamar a FLOW para obtener estado
-    const params = {
-      apiKey: API_KEY,
-      token,
-    };
-    params.s = signParams(params, SECRET_KEY);
-
-    const response = await axios.post(
-      'https://www.flow.cl/api/payment/getStatus',
-      new URLSearchParams(params),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const { commerceOrder, status } = response.data;
-    console.log("Confirmación FLOW:", commerceOrder, status);
-
-    let nuevoEstado = "Pendiente";
-    if (status === 2) nuevoEstado = "Pagado";
-    else if (status === 3) nuevoEstado = "Rechazado";
-    else if (status === 4) nuevoEstado = "Anulado";
-
-    // Actualizar pedido en Supabase
-    const { error } = await supabase
-      .from("pedidos")
-      .update({ estado: nuevoEstado })
-      .eq("id", commerceOrder);
-
-    if (error) throw error;
-
-    res.status(200).json({ message: "OK", pedido: commerceOrder, estado: nuevoEstado });
-  } catch (err) {
-    console.error("Error Flow Webhook:", err.message);
-    res.status(500).json({ error: "Error procesando pago" });
+async function handleFlowConfirm(token, res) {
+  if (!token) {
+    return res.status(400).send("Token no recibido");
   }
+
+  const params = { apiKey: API_KEY, token };
+  params.s = signParams(params, SECRET_KEY);
+
+  const response = await axios.post(
+    'https://www.flow.cl/api/payment/getStatus',
+    new URLSearchParams(params),
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+
+  const { commerceOrder, status } = response.data;
+
+  let nuevoEstado = "Pendiente";
+  if (status === 2) nuevoEstado = "Pagado";
+  else if (status === 3) nuevoEstado = "Rechazado";
+  else if (status === 4) nuevoEstado = "Anulado";
+
+  const { error } = await supabase
+    .from("pedidos")
+    .update({ estado: nuevoEstado })
+    .eq("id", commerceOrder);
+
+  if (error) throw error;
+
+  res.send("OK");
+}
+
+// POST
+app.post('/api/flow-confirm', async (req, res) => {
+  await handleFlowConfirm(req.body.token, res);
+});
+
+// GET
+app.get('/api/flow-confirm', async (req, res) => {
+  await handleFlowConfirm(req.query.token, res);
 });
 
 app.post('/api/flow-order', async (req, res) => {
@@ -116,6 +113,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log('Backend FLOW escuchando en puerto', PORT);
 });
+
 
 
 
