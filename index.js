@@ -8,7 +8,7 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 app.use(cors());
-
+app.use(express.urlencoded({ extended: true }));
 // Configura tus credenciales FLOW en un archivo .env
 const API_KEY = process.env.FLOW_API_KEY;
 const SECRET_KEY = process.env.FLOW_SECRET_KEY;
