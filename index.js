@@ -12,7 +12,7 @@ app.use(express.urlencoded({ extended: true }));
 // Configura tus credenciales FLOW en un archivo .env
 const API_KEY = process.env.FLOW_API_KEY;
 const SECRET_KEY = process.env.FLOW_SECRET_KEY;
-const FLOW_URL = 'https://sandbox.flow.cl/api/payment/create'; // Usa sandbox si es necesario
+const FLOW_URL = 'https://www.flow.cl/api/payment/create'; // Usa sandbox si es necesario
 const { createClient } = require('@supabase/supabase-js');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -45,7 +45,7 @@ app.post('/api/flow-confirm', async (req, res) => {
     params.s = signParams(params, SECRET_KEY);
 
     const response = await axios.post(
-      'https://sandbox.flow.cl/api/payment/getStatus',
+      'https://www.flow.cl/api/payment/getStatus',
       new URLSearchParams(params),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
@@ -116,6 +116,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log('Backend FLOW escuchando en puerto', PORT);
 });
+
 
 
 
