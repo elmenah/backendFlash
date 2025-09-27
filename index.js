@@ -31,17 +31,26 @@ function signParams(params, secretKey) {
 // Endpoint para recibir confirmación de pago de FLOW
 app.post('/api/flow-confirm', async (req, res) => {
   try {
-    const { commerceOrder } = req.body; // FLOW envía el pedido_id aquí
-    await supabase
-      .from('pedidos')
-      .update({ estado: 'Pagado' })
-      .eq('id', commerceOrder);
+    const { commerceOrder, status } = req.body;
+
+    if (status === 2) { // 2 = Pago exitoso
+      await supabase
+        .from('pedidos')
+        .update({ estado: 'Pagado' })
+        .eq('id', commerceOrder);
+
+      console.log(`✅ Pedido ${commerceOrder} actualizado a Pagado`);
+    } else {
+      console.log(`⚠️ Pedido ${commerceOrder} con status ${status}, no se marca como Pagado`);
+    }
+
     res.status(200).send('OK');
   } catch (error) {
     console.error('Error actualizando pedido:', error);
     res.status(500).send('Error');
   }
 });
+
 
 app.post('/api/flow-order', async (req, res) => {
   try {
