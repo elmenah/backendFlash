@@ -31,18 +31,34 @@ function signParams(params, secretKey) {
 // Endpoint para recibir confirmación de pago de FLOW
 app.post('/api/flow-confirm', async (req, res) => {
   try {
-    const { commerceOrder, status } = req.body; 
-    // 👆 O si consultas con getStatus: const { commerceOrder, status } = response.data;
+    const { token } = req.body;
 
-    console.log("Pedido recibido:", commerceOrder, "Status:", status);
+    if (!token) {
+      return res.status(400).json({ error: "Token no recibido" });
+    }
+
+    // Llamar a FLOW para obtener estado
+    const params = {
+      apiKey: API_KEY,
+      token,
+    };
+    params.s = signParams(params, SECRET_KEY);
+
+    const response = await axios.post(
+      'https://sandbox.flow.cl/api/payment/getStatus',
+      new URLSearchParams(params),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const { commerceOrder, status } = response.data;
+    console.log("Confirmación FLOW:", commerceOrder, status);
 
     let nuevoEstado = "Pendiente";
-
     if (status === 2) nuevoEstado = "Pagado";
     else if (status === 3) nuevoEstado = "Rechazado";
     else if (status === 4) nuevoEstado = "Anulado";
 
-    // Actualizar en Supabase
+    // Actualizar pedido en Supabase
     const { error } = await supabase
       .from("pedidos")
       .update({ estado: nuevoEstado })
@@ -50,13 +66,12 @@ app.post('/api/flow-confirm', async (req, res) => {
 
     if (error) throw error;
 
-    res.status(200).json({ message: "OK" });
+    res.status(200).json({ message: "OK", pedido: commerceOrder, estado: nuevoEstado });
   } catch (err) {
     console.error("Error Flow Webhook:", err.message);
     res.status(500).json({ error: "Error procesando pago" });
   }
 });
-
 
 app.post('/api/flow-order', async (req, res) => {
   try {
