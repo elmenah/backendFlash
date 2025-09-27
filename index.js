@@ -31,23 +31,29 @@ function signParams(params, secretKey) {
 // Endpoint para recibir confirmación de pago de FLOW
 app.post('/api/flow-confirm', async (req, res) => {
   try {
-    const { commerceOrder, status } = req.body;
+    const { commerceOrder, status } = req.body; 
+    // 👆 O si consultas con getStatus: const { commerceOrder, status } = response.data;
 
-    if (status === 2) { // 2 = Pago exitoso
-      await supabase
-        .from('pedidos')
-        .update({ estado: 'Pagado' })
-        .eq('id', commerceOrder);
+    console.log("Pedido recibido:", commerceOrder, "Status:", status);
 
-      console.log(`✅ Pedido ${commerceOrder} actualizado a Pagado`);
-    } else {
-      console.log(`⚠️ Pedido ${commerceOrder} con status ${status}, no se marca como Pagado`);
-    }
+    let nuevoEstado = "Pendiente";
 
-    res.status(200).send('OK');
-  } catch (error) {
-    console.error('Error actualizando pedido:', error);
-    res.status(500).send('Error');
+    if (status === 2) nuevoEstado = "Pagado";
+    else if (status === 3) nuevoEstado = "Rechazado";
+    else if (status === 4) nuevoEstado = "Anulado";
+
+    // Actualizar en Supabase
+    const { error } = await supabase
+      .from("pedidos")
+      .update({ estado: nuevoEstado })
+      .eq("id", commerceOrder);
+
+    if (error) throw error;
+
+    res.status(200).json({ message: "OK" });
+  } catch (err) {
+    console.error("Error Flow Webhook:", err.message);
+    res.status(500).json({ error: "Error procesando pago" });
   }
 });
 
