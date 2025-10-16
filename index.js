@@ -1,123 +1,177 @@
-// Backend mínimo para crear orden de pago FLOW
+// Backend para crear orden de pago con Mercado Pago Chile
 const express = require('express');
-const axios = require('axios');
-const crypto = require('crypto');
+const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
-app.use(express.urlencoded({ extended: true }));
-// Configura tus credenciales FLOW en un archivo .env
-const API_KEY = process.env.FLOW_API_KEY;
-const SECRET_KEY = process.env.FLOW_SECRET_KEY;
-const FLOW_URL = 'https://www.flow.cl/api/payment/create'; // Usa sandbox si es necesario
+
+// Configurar Mercado Pago con credenciales de Chile
+const client = new MercadoPagoConfig({
+    accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN,
+    options: {
+        timeout: 5000
+    }
+});
+
+// Configurar Supabase
 const { createClient } = require('@supabase/supabase-js');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-// Utilidad para firmar los parámetros
-function signParams(params, secretKey) {
-    // Ordenar alfabéticamente
-    const keys = Object.keys(params).sort();
-    let stringToSign = '';
-    keys.forEach((key) => {
-        stringToSign += key + params[key];
-    });
-    return crypto.createHmac('sha256', secretKey).update(stringToSign).digest('hex');
-}
-// Endpoint para recibir confirmación de pago de FLOW
-async function handleFlowConfirm(token, res) {
-  if (!token) {
-    return res.status(400).send("Token no recibido");
-  }
+// Endpoint para crear preferencia de pago
+app.post('/api/mercadopago-order', async (req, res) => {
+    try {
+        const { orderId, subject, amount, email } = req.body;
 
-  const params = { apiKey: API_KEY, token };
-  params.s = signParams(params, SECRET_KEY);
+        // Validar parámetros
+        if (!orderId || !subject || !amount || !email) {
+            return res.status(400).json({ 
+                error: 'Faltan parámetros requeridos',
+                required: ['orderId', 'subject', 'amount', 'email']
+            });
+        }
 
-  const response = await axios.post(
-    'https://www.flow.cl/api/payment/getStatus',
-    new URLSearchParams(params),
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+        const preference = new Preference(client);
 
-  const { commerceOrder, status } = response.data;
+        const requestBody = {
+            items: [
+                {
+                    id: orderId,
+                    title: subject,
+                    quantity: 1,
+                    unit_price: Number(amount),
+                    currency_id: 'CLP'
+                }
+            ],
+            payer: {
+                email: email
+            },
+            back_urls: {
+                success: 'https://backendflash.onrender.com/mercadopago-success',
+                failure: 'https://backendflash.onrender.com/mercadopago-failure',
+                pending: 'https://backendflash.onrender.com/mercadopago-pending'
+            },
+            auto_return: 'approved',
+            external_reference: orderId,
+            notification_url: 'https://backendflash.onrender.com/api/mercadopago-webhook',
+            statement_descriptor: 'TioFlashStore',
+            expires: false,
+            payment_methods: {
+                excluded_payment_methods: [],
+                excluded_payment_types: [],
+                installments: 12
+            }
+        };
 
-  let nuevoEstado = "Pendiente";
-  if (status === 2) nuevoEstado = "Pagado";
-  else if (status === 3) nuevoEstado = "Rechazado";
-  else if (status === 4) nuevoEstado = "Anulado";
+        const response = await preference.create({ body: requestBody });
+        
+        console.log('Preferencia creada:', {
+            id: response.id,
+            external_reference: orderId
+        });
+        
+        res.json({
+            id: response.id,
+            init_point: response.init_point,
+            sandbox_init_point: response.sandbox_init_point
+        });
 
-  const { error } = await supabase
-    .from("pedidos")
-    .update({ estado: nuevoEstado })
-    .eq("id", commerceOrder);
-
-  if (error) throw error;
-
-  res.send("OK");
-}
-
-// POST
-app.post('/api/flow-confirm', async (req, res) => {
-  await handleFlowConfirm(req.body.token, res);
+    } catch (error) {
+        console.error('Error creando preferencia MP:', error);
+        res.status(500).json({ 
+            error: 'Error creando preferencia de pago',
+            details: error.message 
+        });
+    }
 });
 
-// GET
-app.get('/api/flow-confirm', async (req, res) => {
-  await handleFlowConfirm(req.query.token, res);
+// Webhook para recibir notificaciones de Mercado Pago
+app.post('/api/mercadopago-webhook', async (req, res) => {
+    try {
+        const { type, data } = req.body;
+        
+        console.log('Webhook recibido:', { type, data });
+
+        if (type === 'payment') {
+            const payment = new Payment(client);
+            const paymentInfo = await payment.get({ id: data.id });
+            
+            console.log('Info del pago:', {
+                id: paymentInfo.id,
+                status: paymentInfo.status,
+                external_reference: paymentInfo.external_reference
+            });
+
+            // Actualizar estado en Supabase
+            let nuevoEstado = "Pendiente";
+            if (paymentInfo.status === 'approved') nuevoEstado = "Pagado";
+            else if (paymentInfo.status === 'rejected') nuevoEstado = "Rechazado";
+            else if (paymentInfo.status === 'cancelled') nuevoEstado = "Anulado";
+            else if (paymentInfo.status === 'pending' || paymentInfo.status === 'in_process') nuevoEstado = "Pendiente";
+
+            if (paymentInfo.external_reference) {
+                const { error } = await supabase
+                    .from("pedidos")
+                    .update({ estado: nuevoEstado })
+                    .eq("id", paymentInfo.external_reference);
+
+                if (error) {
+                    console.error('Error actualizando pedido en Supabase:', error);
+                } else {
+                    console.log(`Pedido ${paymentInfo.external_reference} actualizado a ${nuevoEstado}`);
+                }
+            }
+        }
+        
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error('Error procesando webhook:', error);
+        res.status(500).send('Error');
+    }
 });
 
-app.post('/api/flow-order', async (req, res) => {
-  try {
-    const { orderId, subject, amount, email } = req.body;
-      // Redondear el monto a entero para CLP
-      const amountInt = Math.round(amount);
-      // Parámetros requeridos por FLOW
-      const params = {
-        apiKey: API_KEY,
-        commerceOrder: orderId,
-        subject: subject,
-        currency: 'CLP',
-        amount: amountInt,
-        email: email,
-        paymentMethod: 9, // 9 = todos los métodos
-        urlConfirmation: process.env.FLOW_CONFIRM_URL, // Debe ser pública
-        urlReturn: process.env.FLOW_RETURN_URL, // Debe ser pública
-      };
-    // Firmar
-    params.s = signParams(params, SECRET_KEY);
-    // Llamar a FLOW
-    const response = await axios.post(FLOW_URL, new URLSearchParams(params), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
-    res.json(response.data);
-  } catch (err) {
-    console.error('Error en /api/flow-order:', err, err.response?.data);
-    res.status(500).json({ error: err.message, details: err.response?.data });
-  }
+// Rutas de redirección después del pago
+app.get('/mercadopago-success', (req, res) => {
+    const { collection_id, collection_status, external_reference } = req.query;
+    console.log('Pago exitoso:', { collection_id, collection_status, external_reference });
+    res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
 });
 
-app.get('/flow-redirect', (req, res) => {
-  // Puedes pasar parámetros si lo necesitas, por ejemplo ?status=success
-  res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
+app.get('/mercadopago-failure', (req, res) => {
+    const { collection_id, collection_status, external_reference } = req.query;
+    console.log('Pago fallido:', { collection_id, collection_status, external_reference });
+    res.redirect('https://tioflashstore.netlify.app/pago-fallido');
 });
 
-app.post('/flow-redirect', (req, res) => {
-  // Puedes pasar parámetros si lo necesitas, por ejemplo ?status=success
-  res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
+app.get('/mercadopago-pending', (req, res) => {
+    const { collection_id, collection_status, external_reference } = req.query;
+    console.log('Pago pendiente:', { collection_id, collection_status, external_reference });
+    res.redirect('https://tioflashstore.netlify.app/pago-pendiente');
 });
-const PORT = process.env.PORT || 4000;
+
+// Endpoint para verificar estado de un pago específico
+app.get('/api/payment-status/:paymentId', async (req, res) => {
+    try {
+        const payment = new Payment(client);
+        const paymentData = await payment.get({ id: req.params.paymentId });
+        
+        res.json({
+            status: paymentData.status,
+            status_detail: paymentData.status_detail,
+            external_reference: paymentData.external_reference,
+            transaction_amount: paymentData.transaction_amount
+        });
+    } catch (error) {
+        console.error('Error obteniendo estado:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log('Backend FLOW escuchando en puerto', PORT);
+    console.log('Backend Mercado Pago escuchando en puerto', PORT);
 });
-
-
-
-
-
-
-
-
