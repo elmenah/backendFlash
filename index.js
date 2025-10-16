@@ -53,7 +53,7 @@ app.post('/api/mercadopago-order', async (req, res) => {
                     id: orderId,
                     title: subject,
                     quantity: 1,
-                    unit_price: unitPrice, // ✅ Ahora es entero
+                    unit_price: unitPrice,
                     currency_id: 'CLP'
                 }
             ],
@@ -61,9 +61,9 @@ app.post('/api/mercadopago-order', async (req, res) => {
                 email: email
             },
             back_urls: {
-                success: 'https://backendflash.onrender.com/mercadopago-success',
-                failure: 'https://backendflash.onrender.com/mercadopago-failure',
-                pending: 'https://backendflash.onrender.com/mercadopago-pending'
+                success: `https://backendflash.onrender.com/mercadopago-success?order=${orderId}&email=${encodeURIComponent(email)}`,
+                failure: `https://backendflash.onrender.com/mercadopago-failure?order=${orderId}`,
+                pending: `https://backendflash.onrender.com/mercadopago-pending?order=${orderId}`
             },
             auto_return: 'approved',
             external_reference: orderId,
@@ -100,7 +100,6 @@ app.post('/api/mercadopago-order', async (req, res) => {
     }
 });
 
-// ...resto del código igual...
 // Webhook para recibir notificaciones de Mercado Pago
 app.post('/api/mercadopago-webhook', async (req, res) => {
     try {
@@ -146,11 +145,71 @@ app.post('/api/mercadopago-webhook', async (req, res) => {
     }
 });
 
-// Rutas de redirección después del pago
-app.get('/mercadopago-success', (req, res) => {
-    const { collection_id, collection_status, external_reference } = req.query;
-    console.log('Pago exitoso:', { collection_id, collection_status, external_reference });
-    res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
+// ✅ Rutas de redirección después del pago - AQUÍ es donde se procesa el éxito
+app.get('/mercadopago-success', async (req, res) => {
+    const { collection_id, collection_status, external_reference, order, email } = req.query;
+    console.log('Pago exitoso:', { collection_id, collection_status, external_reference, order, email });
+    
+    try {
+        // ✅ Obtener datos del pedido de Supabase para el WhatsApp
+        const { data: pedidoData, error: pedidoError } = await supabase
+            .from("pedidos")
+            .select(`
+                *,
+                pedido_items (
+                    nombre_producto,
+                    precio_unitario,
+                    cantidad
+                )
+            `)
+            .eq("id", external_reference || order)
+            .single();
+
+        if (pedidoError) {
+            console.error('Error obteniendo pedido:', pedidoError);
+        }
+
+        // ✅ Preparar datos para el WhatsApp
+        let wspParams = '';
+        if (pedidoData) {
+            const total = pedidoData.pedido_items.reduce((sum, item) => 
+                sum + (item.precio_unitario * item.cantidad), 0
+            );
+            
+            const CLP = new Intl.NumberFormat("es-CL", {
+                style: "currency",
+                currency: "CLP",
+            });
+
+            let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
+            mensaje += `========================================%0A`;
+            mensaje += `Pedido #${pedidoData.id} - PAGADO ✅%0A`;
+            mensaje += `========================================%0A`;
+            
+            pedidoData.pedido_items.forEach((item) => {
+                mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+            });
+            
+            mensaje += `========================================%0A`;
+            mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
+            mensaje += `💳 Método: Mercado Pago%0A`;
+            mensaje += `========================================%0A`;
+            mensaje += `📧 Email: ${pedidoData.correo}%0A`;
+            mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
+            mensaje += `%0A`;
+            mensaje += `✨ ¡Gracias por tu compra!%0A`;
+            mensaje += `Procesaremos tu pedido lo antes posible.`;
+            
+            wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
+        }
+
+        // ✅ Redirigir al frontend con parámetros para WhatsApp
+        res.redirect(`https://tioflashstore.netlify.app/pago-exitoso${wspParams}`);
+        
+    } catch (error) {
+        console.error('Error procesando éxito:', error);
+        res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
+    }
 });
 
 app.get('/mercadopago-failure', (req, res) => {
