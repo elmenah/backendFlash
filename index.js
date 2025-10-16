@@ -35,6 +35,16 @@ app.post('/api/mercadopago-order', async (req, res) => {
             });
         }
 
+        // ✅ CONVERTIR A ENTERO (requerido para CLP)
+        const unitPrice = Math.round(Number(amount));
+        
+        console.log('Creando preferencia con:', {
+            orderId,
+            subject,
+            unitPrice,
+            email
+        });
+
         const preference = new Preference(client);
 
         const requestBody = {
@@ -43,7 +53,7 @@ app.post('/api/mercadopago-order', async (req, res) => {
                     id: orderId,
                     title: subject,
                     quantity: 1,
-                    unit_price: Number(amount),
+                    unit_price: unitPrice, // ✅ Ahora es entero
                     currency_id: 'CLP'
                 }
             ],
@@ -69,7 +79,7 @@ app.post('/api/mercadopago-order', async (req, res) => {
 
         const response = await preference.create({ body: requestBody });
         
-        console.log('Preferencia creada:', {
+        console.log('Preferencia creada exitosamente:', {
             id: response.id,
             external_reference: orderId
         });
@@ -84,11 +94,13 @@ app.post('/api/mercadopago-order', async (req, res) => {
         console.error('Error creando preferencia MP:', error);
         res.status(500).json({ 
             error: 'Error creando preferencia de pago',
-            details: error.message 
+            details: error.message,
+            mercadopagoError: error.cause || error
         });
     }
 });
 
+// ...resto del código igual...
 // Webhook para recibir notificaciones de Mercado Pago
 app.post('/api/mercadopago-webhook', async (req, res) => {
     try {
