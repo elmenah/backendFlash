@@ -197,6 +197,7 @@ app.get('/mercadopago-success', async (req, res) => {
             mensaje += `📧 Email: ${pedidoData.correo}%0A`;
             mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
             mensaje += `%0A`;
+            mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
             mensaje += `Esta es la confirmación de mi pedido.`;
             
             wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
@@ -245,4 +246,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log('Backend Mercado Pago escuchando en puerto', PORT);
 });
+
 
