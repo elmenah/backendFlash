@@ -149,63 +149,69 @@ app.post('/api/mercadopago-webhook', async (req, res) => {
 app.get('/mercadopago-success', async (req, res) => {
     const { collection_id, collection_status, external_reference, order, email } = req.query;
     console.log('Pago exitoso:', { collection_id, collection_status, external_reference, order, email });
-    
     try {
-        // ✅ Obtener datos del pedido de Supabase para el WhatsApp
-        const { data: pedidoData, error: pedidoError } = await supabase
-            .from("pedidos")
-            .select(`
-                *,
-                pedido_items (
-                    nombre_producto,
-                    precio_unitario,
-                    cantidad
-                )
-            `)
-            .eq("id", external_reference || order)
-            .single();
-
-        if (pedidoError) {
-            console.error('Error obteniendo pedido:', pedidoError);
-        }
-
-        // ✅ Preparar datos para el WhatsApp
+        // Obtener datos del pedido desde Supabase
+        const pedidoId = external_reference || order;
         let wspParams = '';
-        if (pedidoData) {
-            const total = pedidoData.pedido_items.reduce((sum, item) => 
-                sum + (item.precio_unitario * item.cantidad), 0
-            );
-            
-            const CLP = new Intl.NumberFormat("es-CL", {
-                style: "currency",
-                currency: "CLP",
-            });
+        if (pedidoId) {
+            const { data: pedidoData, error: pedidoError } = await supabase
+                .from('pedidos')
+                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad )`)
+                .eq('id', pedidoId)
+                .single();
 
-            let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
-            mensaje += `========================================%0A`;
-            mensaje += `Pedido #${pedidoData.id} - PAGADO ✅%0A`;
-            mensaje += `========================================%0A`;
-            
-            pedidoData.pedido_items.forEach((item) => {
-                mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
-            });
-            
-            mensaje += `========================================%0A`;
-            mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
-            mensaje += `💳 Método: Mercado Pago%0A`;
-            mensaje += `========================================%0A`;
-            mensaje += `📧 Email: ${pedidoData.correo}%0A`;
-            mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
-            mensaje += `%0A`;
-            mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
-            mensaje += `Esta es la confirmación de mi pedido.`;
-            
-            wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
+            if (pedidoError) {
+                console.error('Error obteniendo pedido:', pedidoError);
+            } else if (pedidoData) {
+                const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+                const total = pedidoData.pedido_items.reduce((sum, item) => sum + (item.precio_unitario * item.cantidad), 0);
+
+                let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
+                mensaje += `========================================%0A`;
+                mensaje += `Pedido #${pedidoData.id} - PAGADO ✅%0A`;
+                mensaje += `========================================%0A`;
+
+                pedidoData.pedido_items.forEach((item) => {
+                    mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+                });
+
+                mensaje += `========================================%0A`;
+                mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
+                mensaje += `💳 Método: Mercado Pago%0A`;
+                mensaje += `========================================%0A`;
+                mensaje += `📧 Email: ${pedidoData.correo}%0A`;
+                mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
+                mensaje += `%0A`;
+                mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
+
+                // Información Xbox: si existe xbox_option incluir detalles, si no incluir texto 'No tengo cuenta de xbox'
+                if (pedidoData.xbox_option) {
+                    mensaje += `------------------------------------%0A`;
+                    mensaje += `🎮 Fortnite Crew - Información Xbox:%0A`;
+                    mensaje += `Opción: ${pedidoData.xbox_option}%0A`;
+                    if (pedidoData.xbox_option === 'cuenta-existente') {
+                        if (pedidoData.xbox_email && pedidoData.xbox_email.length) {
+                            mensaje += `Correo Xbox: ${pedidoData.xbox_email}%0A`;
+                        } else {
+                            mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
+                        }
+                        if (pedidoData.xbox_password && pedidoData.xbox_password.length) {
+                            mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
+                        }
+                    } else {
+                        // Opción sin-cuenta u otra
+                        mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
+                    }
+                }
+
+                mensaje += `Esta es la confirmación de mi pedido.`;
+
+                wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
+            }
         }
 
-        // ✅ Redirigir al frontend con parámetros para WhatsApp
+        // Redirigir al frontend con parámetros para WhatsApp
         res.redirect(`https://tioflashstore.netlify.app/pago-exitoso${wspParams}`);
-        
     } catch (error) {
         console.error('Error procesando éxito:', error);
         res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
@@ -246,5 +252,6 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log('Backend Mercado Pago escuchando en puerto', PORT);
 });
+
 
 
