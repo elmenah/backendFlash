@@ -209,6 +209,26 @@ app.get('/mercadopago-success', async (req, res) => {
                     mensaje += `🎬 Crunchyroll - Tipo de cuenta:%0A`;
                     mensaje += `Opción: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
                 }
+
+                // Información ChatGPT - NUEVO
+                if (pedidoData.chatgpt_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `🤖 ChatGPT Plus:%0A`;
+                    if (pedidoData.chatgpt_option === '1-mes') {
+                        mensaje += `Plan: 1 Mes (Por invitación)%0A`;
+                        if (pedidoData.chatgpt_email) {
+                            mensaje += `Correo para invitación: ${pedidoData.chatgpt_email}%0A`;
+                        }
+                    } else {
+                        mensaje += `Plan: 12 Meses (Activación en cuenta propia)%0A`;
+                    }
+                }
+                // Información IPTV - NUEVO
+                if (pedidoData.iptv_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `📺 IPTV Premium:%0A`;
+                    mensaje += `Tipo de servicio: ${pedidoData.iptv_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Renovación'}%0A`;
+                }
                 mensaje += `Esta es la confirmación de mi pedido.`;
 
                 wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
@@ -257,6 +277,7 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log('Backend Mercado Pago escuchando en puerto', PORT);
 });
+
 
 
 
