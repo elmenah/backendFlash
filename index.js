@@ -203,7 +203,12 @@ app.get('/mercadopago-success', async (req, res) => {
                         mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
                     }
                 }
-
+                // Información Crunchyroll - NUEVO
+                if (pedidoData.crunchyroll_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `🎬 Crunchyroll - Tipo de cuenta:%0A`;
+                    mensaje += `Opción: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
+                }
                 mensaje += `Esta es la confirmación de mi pedido.`;
 
                 wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
@@ -252,6 +257,7 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log('Backend Mercado Pago escuchando en puerto', PORT);
 });
+
 
 
 
