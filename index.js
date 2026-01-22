@@ -156,7 +156,7 @@ app.get('/mercadopago-success', async (req, res) => {
         if (pedidoId) {
             const { data: pedidoData, error: pedidoError } = await supabase
                 .from('pedidos')
-                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad )`)
+                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad, imagen_url )`)
                 .eq('id', pedidoId)
                 .single();
 
@@ -173,6 +173,10 @@ app.get('/mercadopago-success', async (req, res) => {
 
                 pedidoData.pedido_items.forEach((item) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+                    // ✅ INCLUIR LA URL DE LA IMAGEN
+                    if (item.imagen_url) {
+                        mensaje += `  🖼️ ${item.imagen_url}%0A`;
+                    }
                 });
 
                 mensaje += `========================================%0A`;
@@ -229,6 +233,27 @@ app.get('/mercadopago-success', async (req, res) => {
                     mensaje += `📺 IPTV Premium:%0A`;
                     mensaje += `Tipo de servicio: ${pedidoData.iptv_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Renovación'}%0A`;
                 }
+                
+                // Información V-Bucks - NUEVO
+                if (pedidoData.vbucks_delivery_method) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `💎 V-Bucks - Método de entrega:%0A`;
+                    
+                    if (pedidoData.vbucks_delivery_method === 'epic-link') {
+                        mensaje += `Método: Vincular a perfil Epic%0A`;
+                        if (pedidoData.vbucks_epic_email) {
+                            mensaje += `Epic Email: ${pedidoData.vbucks_epic_email}%0A`;
+                        }
+                    } else if (pedidoData.vbucks_delivery_method === 'xbox-account') {
+                        mensaje += `Método: Cuenta de Xbox%0A`;
+                        if (pedidoData.vbucks_xbox_email) {
+                            mensaje += `Xbox Email: ${pedidoData.vbucks_xbox_email}%0A`;
+                        }
+                    } else if (pedidoData.vbucks_delivery_method === 'preloaded-account') {
+                        mensaje += `Método: Cuenta precargada%0A`;
+                    }
+                }
+                
                 mensaje += `Esta es la confirmación de mi pedido.`;
 
                 wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
@@ -277,8 +302,3 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log('Backend Mercado Pago escuchando en puerto', PORT);
 });
-
-
-
-
-
