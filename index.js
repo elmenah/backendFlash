@@ -551,10 +551,16 @@ app.post('/api/paypal/create-order', async (req, res) => {
         });
 
         const data = await response.json();
-        console.log('Orden PayPal creada:', { id: data.id, status: data.status });
+        console.log('Orden PayPal creada:', { id: data.id, status: data.status, links: data.links });
 
         if (data.id) {
-            res.json({ id: data.id, status: data.status });
+            // Buscar la URL de aprobación para redirigir al usuario
+            const approveLink = data.links?.find(link => link.rel === 'payer-action' || link.rel === 'approve');
+            res.json({ 
+                id: data.id, 
+                status: data.status,
+                approveUrl: approveLink?.href || null
+            });
         } else {
             throw new Error(data.message || JSON.stringify(data.details) || 'No se pudo crear la orden');
         }
