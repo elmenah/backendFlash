@@ -1,4 +1,4 @@
-// Backend para crear orden de pago con Mercado Pago Chile + Zenobank Cripto
+// Backend para crear orden de pago con Mercado Pago Chile + Zenobank Cripto + PayPal
 const express = require('express');
 const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const cors = require('cors');
@@ -475,6 +475,238 @@ app.get('/zenobank-success', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log('Backend Mercado Pago + Zenobank escuchando en puerto', PORT);
+
+// ==========================================
+// PAYPAL - Pagos Internacionales
+// ==========================================
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
+const PAYPAL_API_BASE = process.env.PAYPAL_MODE === 'live'
+    ? 'https://api-m.paypal.com'
+    : 'https://api-m.sandbox.paypal.com';
+
+async function getPayPalAccessToken() {
+    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+    const response = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Basic ${auth}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=client_credentials'
+    });
+    const data = await response.json();
+    return data.access_token;
+}
+
+// Exponer Client ID al frontend
+app.get('/api/paypal/client-id', (req, res) => {
+    res.json({ clientId: PAYPAL_CLIENT_ID });
 });
+
+// Crear orden PayPal
+app.post('/api/paypal/create-order', async (req, res) => {
+    try {
+        const { orderId, amount, email } = req.body;
+
+        if (!orderId || !amount || !email) {
+            return res.status(400).json({
+                error: 'Faltan parámetros requeridos',
+                required: ['orderId', 'amount', 'email']
+            });
+        }
+
+        const amountUSD = (Number(amount) / 950).toFixed(2);
+        console.log('Creando orden PayPal:', { orderId, amountUSD, email });
+
+        const accessToken = await getPayPalAccessToken();
+
+        const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${accessToken}`
+            },
+            body: JSON.stringify({
+                intent: 'CAPTURE',
+                purchase_units: [{
+                    reference_id: String(orderId),
+                    amount: {
+                        currency_code: 'USD',
+                        value: amountUSD
+                    }
+                }],
+                payment_source: {
+                    paypal: {
+                        experience_context: {
+                            brand_name: 'Tio Flash Store',
+                            landing_page: 'NO_PREFERENCE',
+                            user_action: 'PAY_NOW',
+                            return_url: `https://backendflash.onrender.com/paypal-success?order=${orderId}&email=${encodeURIComponent(email)}`,
+                            cancel_url: 'https://tioflashstore.netlify.app/pago-fallido'
+                        }
+                    }
+                }
+            })
+        });
+
+        const data = await response.json();
+        console.log('Orden PayPal creada:', { id: data.id, status: data.status });
+
+        if (data.id) {
+            res.json({ id: data.id, status: data.status });
+        } else {
+            throw new Error(data.message || JSON.stringify(data.details) || 'No se pudo crear la orden');
+        }
+    } catch (error) {
+        console.error('Error creando orden PayPal:', error);
+        res.status(500).json({ error: 'Error creando orden de PayPal', details: error.message });
+    }
+});
+
+// Capturar pago PayPal
+app.post('/api/paypal/capture-order/:orderID', async (req, res) => {
+    try {
+        const { orderID } = req.params;
+        console.log('Capturando pago PayPal:', orderID);
+
+        const accessToken = await getPayPalAccessToken();
+
+        const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${accessToken}`
+            }
+        });
+
+        const data = await response.json();
+        console.log('Captura PayPal:', { id: data.id, status: data.status });
+
+        if (data.status === 'COMPLETED') {
+            const referenceId = data.purchase_units?.[0]?.reference_id;
+            if (referenceId) {
+                const { error } = await supabase
+                    .from('pedidos')
+                    .update({ estado: 'Pagado' })
+                    .eq('id', referenceId);
+
+                if (error) {
+                    console.error('Error actualizando pedido PayPal en Supabase:', error);
+                } else {
+                    console.log(`Pedido ${referenceId} actualizado a Pagado (PayPal)`);
+                }
+            }
+        }
+
+        res.json(data);
+    } catch (error) {
+        console.error('Error capturando pago PayPal:', error);
+        res.status(500).json({ error: 'Error capturando pago de PayPal', details: error.message });
+    }
+});
+
+// Redirección después de pago exitoso con PayPal
+app.get('/paypal-success', async (req, res) => {
+    const { order, email, token } = req.query;
+    console.log('PayPal pago exitoso:', { order, email, token });
+    try {
+        if (token) {
+            const accessToken = await getPayPalAccessToken();
+            await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}/capture`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`
+                }
+            });
+        }
+
+        const pedidoId = order;
+        let wspParams = '';
+
+        if (pedidoId) {
+            await supabase
+                .from('pedidos')
+                .update({ estado: 'Pagado' })
+                .eq('id', pedidoId);
+
+            const { data: pedidoData, error: pedidoError } = await supabase
+                .from('pedidos')
+                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad, imagen_url )`)
+                .eq('id', pedidoId)
+                .single();
+
+            if (!pedidoError && pedidoData) {
+                const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+                const total = pedidoData.pedido_items.reduce((sum, item) => sum + (item.precio_unitario * item.cantidad), 0);
+
+                let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
+                mensaje += `========================================%0A`;
+                mensaje += `Pedido #${pedidoData.id} - PAGADO ✅%0A`;
+                mensaje += `========================================%0A`;
+
+                pedidoData.pedido_items.forEach((item) => {
+                    mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+                    if (item.imagen_url) {
+                        mensaje += `  🖼️ ${item.imagen_url}%0A`;
+                    }
+                });
+
+                mensaje += `========================================%0A`;
+                mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
+                mensaje += `💳 Método: PayPal%0A`;
+                mensaje += `========================================%0A`;
+                mensaje += `📧 Email: ${pedidoData.correo}%0A`;
+                mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
+                mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
+
+                if (pedidoData.xbox_option) {
+                    mensaje += `------------------------------------%0A`;
+                    mensaje += `🎮 Fortnite Crew - Información Xbox:%0A`;
+                    mensaje += `Opción: ${pedidoData.xbox_option}%0A`;
+                    if (pedidoData.xbox_option === 'cuenta-existente') {
+                        mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
+                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
+                    } else {
+                        mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
+                    }
+                }
+
+                if (pedidoData.crunchyroll_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `🎬 Crunchyroll: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
+                }
+
+                if (pedidoData.chatgpt_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `🤖 ChatGPT Plus: ${pedidoData.chatgpt_option === '1-mes' ? '1 Mes (Invitación)' : '12 Meses'}%0A`;
+                    if (pedidoData.chatgpt_email) mensaje += `Correo: ${pedidoData.chatgpt_email}%0A`;
+                }
+
+                if (pedidoData.iptv_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `📺 IPTV Premium: ${pedidoData.iptv_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Renovación'}%0A`;
+                }
+
+                if (pedidoData.vbucks_delivery_method) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `💎 V-Bucks: ${pedidoData.vbucks_delivery_method}%0A`;
+                }
+
+                mensaje += `Esta es la confirmación de mi pedido.`;
+                wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
+            }
+        }
+
+        res.redirect(`https://tioflashstore.netlify.app/pago-exitoso${wspParams}`);
+    } catch (error) {
+        console.error('Error procesando éxito PayPal:', error);
+        res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
+    }
+});
+
+app.listen(PORT, () => {
+    console.log('Backend Mercado Pago + Zenobank + PayPal escuchando en puerto', PORT);
+});
+
