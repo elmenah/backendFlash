@@ -1,4 +1,4 @@
-// Backend para crear orden de pago con Mercado Pago Chile
+// Backend para crear orden de pago con Mercado Pago Chile + Zenobank Cripto
 const express = require('express');
 const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const cors = require('cors');
@@ -173,7 +173,6 @@ app.get('/mercadopago-success', async (req, res) => {
 
                 pedidoData.pedido_items.forEach((item) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
-                    // ✅ INCLUIR LA URL DE LA IMAGEN
                     if (item.imagen_url) {
                         mensaje += `  🖼️ ${item.imagen_url}%0A`;
                     }
@@ -188,7 +187,6 @@ app.get('/mercadopago-success', async (req, res) => {
                 mensaje += `%0A`;
                 mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
 
-                // Información Xbox: si existe xbox_option incluir detalles, si no incluir texto 'No tengo cuenta de xbox'
                 if (pedidoData.xbox_option) {
                     mensaje += `------------------------------------%0A`;
                     mensaje += `🎮 Fortnite Crew - Información Xbox:%0A`;
@@ -203,18 +201,16 @@ app.get('/mercadopago-success', async (req, res) => {
                             mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                         }
                     } else {
-                        // Opción sin-cuenta u otra
                         mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
                     }
                 }
-                // Información Crunchyroll - NUEVO
+
                 if (pedidoData.crunchyroll_option) {
                     mensaje += `========================================%0A`;
                     mensaje += `🎬 Crunchyroll - Tipo de cuenta:%0A`;
                     mensaje += `Opción: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
                 }
 
-                // Información ChatGPT - NUEVO
                 if (pedidoData.chatgpt_option) {
                     mensaje += `========================================%0A`;
                     mensaje += `🤖 ChatGPT Plus:%0A`;
@@ -227,14 +223,13 @@ app.get('/mercadopago-success', async (req, res) => {
                         mensaje += `Plan: 12 Meses (Activación en cuenta propia)%0A`;
                     }
                 }
-                // Información IPTV - NUEVO
+
                 if (pedidoData.iptv_option) {
                     mensaje += `========================================%0A`;
                     mensaje += `📺 IPTV Premium:%0A`;
                     mensaje += `Tipo de servicio: ${pedidoData.iptv_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Renovación'}%0A`;
                 }
                 
-                // Información V-Bucks - NUEVO
                 if (pedidoData.vbucks_delivery_method) {
                     mensaje += `========================================%0A`;
                     mensaje += `💎 V-Bucks - Método de entrega:%0A`;
@@ -260,7 +255,6 @@ app.get('/mercadopago-success', async (req, res) => {
             }
         }
 
-        // Redirigir al frontend con parámetros para WhatsApp
         res.redirect(`https://tioflashstore.netlify.app/pago-exitoso${wspParams}`);
     } catch (error) {
         console.error('Error procesando éxito:', error);
@@ -299,33 +293,12 @@ app.get('/api/payment-status/:paymentId', async (req, res) => {
 });
 
 // ==========================================
-// PAYPAL - Crear orden de pago
+// ZENOBANK - Pagos con Criptomonedas
 // ==========================================
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-const PAYPAL_BASE_URL = process.env.PAYPAL_MODE === 'live' 
-    ? 'https://api-m.paypal.com' 
-    : 'https://api-m.sandbox.paypal.com';
+const ZENOBANK_API_KEY = process.env.ZENOBANK_API_KEY;
 
-// Obtener access token de PayPal
-async function getPayPalAccessToken() {
-    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
-    
-    const response = await fetch(`${PAYPAL_BASE_URL}/v1/oauth2/token`, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Basic ${auth}`,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: 'grant_type=client_credentials'
-    });
-
-    const data = await response.json();
-    return data.access_token;
-}
-
-// Crear orden de PayPal
-app.post('/api/paypal-create-order', async (req, res) => {
+// Crear checkout de Zenobank
+app.post('/api/zenobank-checkout', async (req, res) => {
     try {
         const { orderId, subject, amount, email } = req.body;
 
@@ -336,87 +309,101 @@ app.post('/api/paypal-create-order', async (req, res) => {
             });
         }
 
-        const accessToken = await getPayPalAccessToken();
+        // Convertir CLP a USD (tasa aproximada)
+        const amountUSD = (Number(amount) / 950).toFixed(2);
 
-        const response = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
+        console.log('Creando checkout Zenobank:', { orderId, amountUSD, email });
+
+        const response = await fetch('https://api.zenobank.io/api/v1/checkouts', {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'X-API-Key': ZENOBANK_API_KEY
             },
             body: JSON.stringify({
-                intent: 'CAPTURE',
-                purchase_units: [{
-                    reference_id: String(orderId),
-                    description: subject,
-                    amount: {
-                        currency_code: 'USD',
-                        value: String(Number(amount).toFixed(2))
-                    }
-                }],
-                application_context: {
-                    brand_name: 'Tio Flashstore',
-                    landing_page: 'NO_PREFERENCE',
-                    user_action: 'PAY_NOW',
-                    return_url: `https://backendflash.onrender.com/paypal-success?order=${orderId}&email=${encodeURIComponent(email)}`,
-                    cancel_url: `https://backendflash.onrender.com/paypal-cancel?order=${orderId}`
-                }
+                orderId: String(orderId),
+                priceAmount: String(amountUSD),
+                priceCurrency: 'USD',
+                webhookUrl: 'https://backendflash.onrender.com/api/zenobank-webhook',
+                successRedirectUrl: `https://backendflash.onrender.com/zenobank-success?order=${orderId}&email=${encodeURIComponent(email)}`
             })
         });
 
         const data = await response.json();
-        console.log('Orden PayPal creada:', { id: data.id, status: data.status });
 
-        res.json({ id: data.id, status: data.status });
+        console.log('Checkout Zenobank creado:', { id: data.id, status: data.status, checkoutUrl: data.checkoutUrl });
+
+        if (data.checkoutUrl) {
+            res.json({
+                id: data.id,
+                checkoutUrl: data.checkoutUrl,
+                status: data.status
+            });
+        } else {
+            throw new Error(data.message || 'No se pudo crear el checkout');
+        }
 
     } catch (error) {
-        console.error('Error creando orden PayPal:', error);
-        res.status(500).json({ error: 'Error creando orden de PayPal', details: error.message });
+        console.error('Error creando checkout Zenobank:', error);
+        res.status(500).json({ 
+            error: 'Error creando checkout de Zenobank',
+            details: error.message
+        });
     }
 });
 
-// Capturar (confirmar) pago de PayPal
-app.post('/api/paypal-capture-order', async (req, res) => {
+// Webhook de Zenobank para notificaciones de pago
+app.post('/api/zenobank-webhook', async (req, res) => {
     try {
-        const { paypalOrderId, orderId } = req.body;
+        const payload = req.body;
+        console.log('Webhook Zenobank recibido:', payload);
 
-        if (!paypalOrderId) {
-            return res.status(400).json({ error: 'Falta paypalOrderId' });
-        }
+        const orderId = payload.orderId;
+        const status = payload.status;
 
-        const accessToken = await getPayPalAccessToken();
+        if (orderId && status) {
+            let nuevoEstado = 'Pendiente';
+            if (status === 'COMPLETED' || status === 'PAID') nuevoEstado = 'Pagado';
+            else if (status === 'EXPIRED' || status === 'CANCELLED') nuevoEstado = 'Anulado';
 
-        const response = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders/${paypalOrderId}/capture`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        const captureData = await response.json();
-        console.log('Captura PayPal:', { id: captureData.id, status: captureData.status });
-
-        if (captureData.status === 'COMPLETED' && orderId) {
             const { error } = await supabase
                 .from('pedidos')
-                .update({ estado: 'Pagado' })
+                .update({ estado: nuevoEstado })
                 .eq('id', orderId);
 
             if (error) {
-                console.error('Error actualizando pedido en Supabase:', error);
+                console.error('Error actualizando pedido (Zenobank):', error);
             } else {
-                console.log(`Pedido ${orderId} actualizado a Pagado (PayPal)`);
+                console.log(`Pedido ${orderId} actualizado a ${nuevoEstado} (Zenobank)`);
             }
+        }
 
-            // Construir mensaje de WhatsApp (igual que MercadoPago)
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error('Error procesando webhook Zenobank:', error);
+        res.status(500).send('Error');
+    }
+});
+
+// Redirección después de pago exitoso con Zenobank
+app.get('/zenobank-success', async (req, res) => {
+    const { order, email } = req.query;
+    console.log('Zenobank pago exitoso:', { order, email });
+    try {
+        const pedidoId = order;
+        let wspParams = '';
+
+        if (pedidoId) {
+            await supabase
+                .from('pedidos')
+                .update({ estado: 'Pagado' })
+                .eq('id', pedidoId);
+
             const { data: pedidoData, error: pedidoError } = await supabase
                 .from('pedidos')
                 .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad, imagen_url )`)
-                .eq('id', orderId)
+                .eq('id', pedidoId)
                 .single();
-
-            let redirectUrl = 'https://tioflashstore.netlify.app/pago-exitoso';
 
             if (!pedidoError && pedidoData) {
                 const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
@@ -436,7 +423,7 @@ app.post('/api/paypal-capture-order', async (req, res) => {
 
                 mensaje += `========================================%0A`;
                 mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
-                mensaje += `💳 Método: PayPal%0A`;
+                mensaje += `💳 Método: Criptomonedas (Zenobank)%0A`;
                 mensaje += `========================================%0A`;
                 mensaje += `📧 Email: ${pedidoData.correo}%0A`;
                 mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
@@ -465,41 +452,29 @@ app.post('/api/paypal-capture-order', async (req, res) => {
                     if (pedidoData.chatgpt_email) mensaje += `Correo: ${pedidoData.chatgpt_email}%0A`;
                 }
 
+                if (pedidoData.iptv_option) {
+                    mensaje += `========================================%0A`;
+                    mensaje += `📺 IPTV Premium: ${pedidoData.iptv_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Renovación'}%0A`;
+                }
+
                 if (pedidoData.vbucks_delivery_method) {
                     mensaje += `========================================%0A`;
                     mensaje += `💎 V-Bucks: ${pedidoData.vbucks_delivery_method}%0A`;
                 }
 
                 mensaje += `Esta es la confirmación de mi pedido.`;
-                redirectUrl = `https://tioflashstore.netlify.app/pago-exitoso?wsp=${encodeURIComponent(mensaje)}`;
+                wspParams = `?wsp=${encodeURIComponent(mensaje)}`;
             }
-
-            res.json({ status: captureData.status, id: captureData.id, redirectUrl });
-        } else {
-            res.json({ status: captureData.status, id: captureData.id, details: captureData.details });
         }
 
+        res.redirect(`https://tioflashstore.netlify.app/pago-exitoso${wspParams}`);
     } catch (error) {
-        console.error('Error capturando pago PayPal:', error);
-        res.status(500).json({ error: 'Error capturando pago de PayPal', details: error.message });
+        console.error('Error procesando éxito Zenobank:', error);
+        res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
     }
-});
-
-// Rutas de redirección PayPal
-app.get('/paypal-success', async (req, res) => {
-    const { order } = req.query;
-    console.log('PayPal success redirect, orderId:', order);
-    res.redirect('https://tioflashstore.netlify.app/pago-exitoso');
-});
-
-app.get('/paypal-cancel', (req, res) => {
-    const { order } = req.query;
-    console.log('PayPal cancelado, orderId:', order);
-    res.redirect('https://tioflashstore.netlify.app/pago-fallido');
 });
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-    console.log('Backend Mercado Pago escuchando en puerto', PORT);
+    console.log('Backend Mercado Pago + Zenobank escuchando en puerto', PORT);
 });
-
