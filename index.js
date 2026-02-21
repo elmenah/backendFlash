@@ -22,6 +22,43 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
+// ==========================================
+// TASA DE CAMBIO DINÁMICA CLP → USD
+// ==========================================
+let cachedRate = { clpPerUsd: 950, timestamp: 0 };
+const RATE_CACHE_DURATION = 30 * 60 * 1000; // 30 minutos
+
+async function getExchangeRate() {
+    const now = Date.now();
+    if (now - cachedRate.timestamp < RATE_CACHE_DURATION && cachedRate.clpPerUsd) {
+        return cachedRate.clpPerUsd;
+    }
+    try {
+        // API gratuita sin key
+        const res = await fetch('https://open.er-api.com/v6/latest/USD');
+        const data = await res.json();
+        if (data.result === 'success' && data.rates?.CLP) {
+            cachedRate = { clpPerUsd: data.rates.CLP, timestamp: now };
+            console.log('Tasa actualizada: 1 USD =', data.rates.CLP, 'CLP');
+            return data.rates.CLP;
+        }
+    } catch (err) {
+        console.error('Error obteniendo tasa de cambio:', err.message);
+    }
+    // Fallback si falla la API
+    return cachedRate.clpPerUsd || 950;
+}
+
+// Endpoint para que el frontend consulte la tasa actual
+app.get('/api/exchange-rate', async (req, res) => {
+    try {
+        const rate = await getExchangeRate();
+        res.json({ clpPerUsd: rate, source: 'open.er-api.com' });
+    } catch (error) {
+        res.json({ clpPerUsd: 950, source: 'fallback' });
+    }
+});
+
 // Endpoint para crear preferencia de pago
 app.post('/api/mercadopago-order', async (req, res) => {
     try {
@@ -309,10 +346,11 @@ app.post('/api/zenobank-checkout', async (req, res) => {
             });
         }
 
-        // Convertir CLP a USD (tasa aproximada)
-        const amountUSD = (Number(amount) / 950).toFixed(2);
+        // Convertir CLP a USD con tasa dinámica
+        const rate = await getExchangeRate();
+        const amountUSD = (Number(amount) / rate).toFixed(2);
 
-        console.log('Creando checkout Zenobank:', { orderId, amountUSD, email });
+        console.log('Creando checkout Zenobank:', { orderId, amountUSD, rate, email });
 
         const response = await fetch('https://api.zenobank.io/api/v1/checkouts', {
             method: 'POST',
@@ -516,8 +554,11 @@ app.post('/api/paypal/create-order', async (req, res) => {
             });
         }
 
-        const amountUSD = (Number(amount) / 950).toFixed(2);
-        console.log('Creando orden PayPal:', { orderId, amountUSD, email });
+        const rate = await getExchangeRate();
+        const baseUSD = Number((Number(amount) / rate).toFixed(2));
+        // Agregar comisión PayPal (5.4% + $0.30 USD) para recibir el 100%
+        const amountUSD = ((baseUSD + 0.30) / (1 - 0.054)).toFixed(2);
+        console.log('Creando orden PayPal:', { orderId, baseUSD, amountUSD, commission: (amountUSD - baseUSD).toFixed(2), rate, email });
 
         const accessToken = await getPayPalAccessToken();
 
