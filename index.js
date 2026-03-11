@@ -22,6 +22,42 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
+function formatStoreExitDate(dateValue) {
+    if (!dateValue) return null;
+
+    const parsedDate = new Date(dateValue);
+    if (Number.isNaN(parsedDate.getTime())) {
+        return String(dateValue);
+    }
+
+    return parsedDate.toLocaleString('es-CL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+}
+
+function getStoreExitDate(item) {
+    if (!item || typeof item !== 'object') return null;
+
+    return (
+        item.fecha_salida_tienda ||
+        item.fecha_salida ||
+        item.fecha_fin_tienda ||
+        item.fecha_fin ||
+        item.fin ||
+        item.out_date ||
+        item.outDate ||
+        item.sale_end_date ||
+        item.store_exit_date ||
+        null
+    );
+}
+
 // ==========================================
 // TASA DE CAMBIO DINÁMICA CLP → USD
 // ==========================================
@@ -193,7 +229,7 @@ app.get('/mercadopago-success', async (req, res) => {
         if (pedidoId) {
             const { data: pedidoData, error: pedidoError } = await supabase
                 .from('pedidos')
-                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad, imagen_url )`)
+                .select(`*, pedido_items ( * )`)
                 .eq('id', pedidoId)
                 .single();
 
@@ -212,6 +248,11 @@ app.get('/mercadopago-success', async (req, res) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
                     if (item.imagen_url) {
                         mensaje += `  🖼️ ${item.imagen_url}%0A`;
+                    }
+
+                    const storeExitDate = getStoreExitDate(item);
+                    if (storeExitDate) {
+                        mensaje += `  📅 Se va de la tienda: ${formatStoreExitDate(storeExitDate)}%0A`;
                     }
                 });
 
@@ -439,7 +480,7 @@ app.get('/zenobank-success', async (req, res) => {
 
             const { data: pedidoData, error: pedidoError } = await supabase
                 .from('pedidos')
-                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad, imagen_url )`)
+                .select(`*, pedido_items ( * )`)
                 .eq('id', pedidoId)
                 .single();
 
@@ -456,6 +497,11 @@ app.get('/zenobank-success', async (req, res) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
                     if (item.imagen_url) {
                         mensaje += `  🖼️ ${item.imagen_url}%0A`;
+                    }
+
+                    const storeExitDate = getStoreExitDate(item);
+                    if (storeExitDate) {
+                        mensaje += `  📅 Se va de la tienda: ${formatStoreExitDate(storeExitDate)}%0A`;
                     }
                 });
 
@@ -680,7 +726,7 @@ app.get('/paypal-success', async (req, res) => {
 
             const { data: pedidoData, error: pedidoError } = await supabase
                 .from('pedidos')
-                .select(`*, pedido_items ( nombre_producto, precio_unitario, cantidad, imagen_url )`)
+                .select(`*, pedido_items ( * )`)
                 .eq('id', pedidoId)
                 .single();
 
@@ -697,6 +743,11 @@ app.get('/paypal-success', async (req, res) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
                     if (item.imagen_url) {
                         mensaje += `  🖼️ ${item.imagen_url}%0A`;
+                    }
+
+                    const storeExitDate = getStoreExitDate(item);
+                    if (storeExitDate) {
+                        mensaje += `  📅 Se va de la tienda: ${formatStoreExitDate(storeExitDate)}%0A`;
                     }
                 });
 
