@@ -804,6 +804,53 @@ app.get('/paypal-success', async (req, res) => {
     }
 });
 
+// ==========================================
+// SCRAPING IMAGEN CREW DE FORTNITE
+// ==========================================
+let cachedCrewImage = { url: null, timestamp: 0 };
+const CREW_CACHE_DURATION = 60 * 60 * 1000; // 1 hora
+
+app.get('/api/crew-image', async (req, res) => {
+    try {
+        const now = Date.now();
+        if (cachedCrewImage.url && now - cachedCrewImage.timestamp < CREW_CACHE_DURATION) {
+            return res.json({ image: cachedCrewImage.url, source: 'cache' });
+        }
+
+        const axios = require('axios');
+        const response = await axios.get('https://www.fortnite.com/fortnite-crew-subscription?lang=es-ES', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 10000
+        });
+
+        const html = response.data;
+        // Buscar la imagen hero principal del crew (la primera imagen grande de cms-assets)
+        const match = html.match(/src="(https:\/\/cms-assets\.unrealengine\.com\/[^"]+\/output=format:webp\/[^"]+)"/);
+
+        if (match && match[1]) {
+            cachedCrewImage = { url: match[1], timestamp: now };
+            return res.json({ image: match[1], source: 'live' });
+        }
+
+        // Fallback: buscar cualquier imagen de cms-assets grande
+        const fallbackMatch = html.match(/src="(https:\/\/cms-assets\.unrealengine\.com\/[^"]+)"/);
+        if (fallbackMatch && fallbackMatch[1]) {
+            cachedCrewImage = { url: fallbackMatch[1], timestamp: now };
+            return res.json({ image: fallbackMatch[1], source: 'fallback' });
+        }
+
+        res.status(404).json({ error: 'No se encontró imagen del Crew' });
+    } catch (error) {
+        console.error('Error scraping crew image:', error.message);
+        if (cachedCrewImage.url) {
+            return res.json({ image: cachedCrewImage.url, source: 'stale-cache' });
+        }
+        res.status(500).json({ error: 'Error obteniendo imagen del Crew' });
+    }
+});
+
 app.listen(PORT, () => {
     console.log('Backend Mercado Pago + Zenobank + PayPal escuchando en puerto', PORT);
 });
