@@ -728,6 +728,26 @@ app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
+app.get('/api/bot/es-amigo/:epicName', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/es-amigo/${encodeURIComponent(req.params.epicName)}`);
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/agregar', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/agregar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
 // ==========================================
 // SCRAPING IMAGEN CREW DE FORTNITE
 // ==========================================
