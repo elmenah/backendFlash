@@ -649,6 +649,86 @@ app.get('/paypal-success', async (req, res) => {
 });
 
 // ==========================================
+// BOT PROXY ENDPOINTS (para el panel admin)
+// ==========================================
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'menanicolas161@gmail.com';
+
+async function verifyAdmin(req, res) {
+    const token = req.headers['x-admin-token'];
+    if (!token) { res.status(401).json({ error: 'No autorizado' }); return false; }
+    const { createClient } = require('@supabase/supabase-js');
+    const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const { data: { user }, error } = await sb.auth.getUser(token);
+    if (error || !user || user.email !== ADMIN_EMAIL) {
+        res.status(401).json({ error: 'No autorizado' }); return false;
+    }
+    return true;
+}
+
+app.get('/api/bot/stats', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/stats`);
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.get('/api/bot/health', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/health`);
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.get('/api/bot/tienda', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/tienda`);
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/reload', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/reload`, { method: 'POST' });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/refresh-balances', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/refresh-balances`, {
+            method: 'POST',
+            headers: { 'X-Bot-Secret': BOT_SECRET }
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/reactivar/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/reactivar`, { method: 'POST' });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/set-pavos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+// ==========================================
 // SCRAPING IMAGEN CREW DE FORTNITE
 // ==========================================
 let cachedCrewImage = { url: null, timestamp: 0 };
