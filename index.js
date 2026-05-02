@@ -684,9 +684,48 @@ app.get('/api/bot/health', async (req, res) => {
 app.get('/api/bot/tienda', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
-        const r = await fetch(`${BOT_URL}/tienda`);
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+        const r = await fetch('https://fortnite-api.com/v2/shop?language=es');
+        const data = await r.json();
+
+        const items = [];
+        for (const entry of (data.data?.entries || [])) {
+            const offerId = entry.offerId;
+            const precio = entry.finalPrice ?? entry.regularPrice ?? 0;
+            if (!offerId || precio === 0) continue;
+
+            const categoria = entry.layout?.name || 'Otros';
+            if (categoria === 'Pistas de improvisación') continue;
+
+            let nombre = '';
+            let imagen = null;
+
+            if (entry.bundle?.name) {
+                nombre = entry.bundle.name;
+                imagen = entry.bundle.image || null;
+            } else if (entry.brItems?.length > 0) {
+                nombre = entry.brItems[0].name;
+                imagen = entry.brItems[0].images?.featured || entry.brItems[0].images?.icon || null;
+            } else if (entry.tracks?.length > 0) {
+                nombre = entry.tracks[0].title;
+            } else if (entry.instruments?.length > 0) {
+                nombre = entry.instruments[0].name;
+            }
+            if (!nombre) continue;
+
+            items.push({
+                nombre,
+                offer_id: offerId,
+                precio_vbucks: precio,
+                seccion: categoria,
+                imagen,
+            });
+        }
+
+        items.sort((a, b) => a.precio_vbucks - b.precio_vbucks);
+        res.json({ total: items.length, items });
+    } catch (e) {
+        res.status(500).json({ error: 'Error cargando tienda: ' + e.message });
+    }
 });
 
 app.post('/api/bot/reload', async (req, res) => {
