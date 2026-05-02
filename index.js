@@ -728,6 +728,17 @@ app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
+app.post('/api/bot/sync-gifts/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/sync-gifts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
 app.post('/api/bot/set-slots/:accountId', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
