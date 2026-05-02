@@ -728,6 +728,40 @@ app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
+app.get('/api/bot/friends/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/friends`, {
+            headers: { 'X-Bot-Secret': BOT_SECRET }
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/remove-friend/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/remove-friend`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/regalar', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/regalar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
 app.post('/api/bot/sync-gifts/:accountId', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
