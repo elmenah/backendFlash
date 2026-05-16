@@ -95,34 +95,24 @@ async function triggerBotGifts(orderId) {
 async function scanAndRetryPendingGifts() {
     console.log('[BotLog][RETRY_SCAN] Iniciando escaneo de pedidos pendientes...');
     try {
-        // Consultar pedido_items: con offer_id, no entregados, pedido Pagado, menos de 3 intentos
-        const url = `${SUPABASE_URL}/rest/v1/pedido_items` +
-            `?select=id,nombre_producto,offer_id,pavos,bot_gift_attempts,pedidos!inner(estado,username_fortnite)` +
-            `&offer_id=not.is.null` +
-            `&entregado=not.eq.true` +
-            `&pedidos.estado=eq.Pagado` +
-           
-            `&limit=10`;
+        // Consultar pedido_items: con offer_id, no entregados, pedido Pagado
+        const { data: items, error } = await supabase
+            .from('pedido_items')
+            .select('id, nombre_producto, offer_id, pavos, bot_gift_attempts, pedidos!inner(estado, username_fortnite)')
+            .not('offer_id', 'is', null)
+            .not('entregado', 'eq', true)
+            .eq('pedidos.estado', 'Pagado')
+            .limit(10);
 
-        const resp = await fetch(url, {
-            headers: {
-                'apikey': SUPABASE_SERVICE_KEY,
-                'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-            }
-        });
-
-        if (!resp.ok) {
-            const text = await resp.text();
-            console.log(`[BotLog][RETRY_SCAN] Error consultando Supabase: ${resp.status} ${text.slice(0, 200)}`);
+        if (error) {
+            console.log(`[BotLog][RETRY_SCAN] Error consultando Supabase: ${error.message}`);
             return;
         }
 
-        const items = await resp.json();
-        const total = items.length;
-        // Filtrar: máximo 3 intentos
-        const pending = items.filter(i => (i.bot_gift_attempts || 0) < 3);
+        const pending = (items || []);
+        const total = pending.length;
 
-        console.log(`[BotLog][RETRY_SCAN] ${total} pendiente(s) encontrados, ${pending.length} reintentable(s)`);
+        console.log(`[BotLog][RETRY_SCAN] ${total} pendiente(s) encontrados`);
 
         if (pending.length === 0) return;
 
@@ -140,7 +130,7 @@ async function scanAndRetryPendingGifts() {
                 continue;
             }
 
-            console.log(`[BotLog][RETRY_SCAN] Reintentando (intento ${intentos}/3): "${nombre}" → ${epicName}`);
+            console.log(`[BotLog][RETRY_SCAN] Reintentando (intento ${intentos}): "${nombre}" → ${epicName}`);
 
             try {
                 const controller = new AbortController();
@@ -169,7 +159,7 @@ async function scanAndRetryPendingGifts() {
                     await supabase.from('pedido_items').update({ entregado: true }).eq('id', item.id);
                 } else {
                     const err = result.error || 'desconocido';
-                    console.log(`[BotLog][RETRY_SCAN] ❌ "${nombre}" falló (intento ${intentos}/3): ${err}`);
+                    console.log(`[BotLog][RETRY_SCAN] ❌ "${nombre}" falló (intento ${intentos}): ${err}`);
                     await supabase.from('pedido_items').update({
                         bot_gift_attempts: intentos,
                         bot_gift_last_error: String(err).slice(0, 500),
