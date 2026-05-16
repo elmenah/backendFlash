@@ -684,48 +684,9 @@ app.get('/api/bot/health', async (req, res) => {
 app.get('/api/bot/tienda', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
-        const r = await fetch('https://fortnite-api.com/v2/shop?language=es');
-        const data = await r.json();
-
-        const items = [];
-        for (const entry of (data.data?.entries || [])) {
-            const offerId = entry.offerId;
-            const precio = entry.finalPrice ?? entry.regularPrice ?? 0;
-            if (!offerId || precio === 0) continue;
-
-            const categoria = entry.layout?.name || 'Otros';
-            if (categoria === 'Pistas de improvisación') continue;
-
-            let nombre = '';
-            let imagen = null;
-
-            if (entry.bundle?.name) {
-                nombre = entry.bundle.name;
-                imagen = entry.bundle.image || null;
-            } else if (entry.brItems?.length > 0) {
-                nombre = entry.brItems[0].name;
-                imagen = entry.brItems[0].images?.featured || entry.brItems[0].images?.icon || null;
-            } else if (entry.tracks?.length > 0) {
-                nombre = entry.tracks[0].title;
-            } else if (entry.instruments?.length > 0) {
-                nombre = entry.instruments[0].name;
-            }
-            if (!nombre) continue;
-
-            items.push({
-                nombre,
-                offer_id: offerId,
-                precio_vbucks: precio,
-                seccion: categoria,
-                imagen,
-            });
-        }
-
-        items.sort((a, b) => a.precio_vbucks - b.precio_vbucks);
-        res.json({ total: items.length, items });
-    } catch (e) {
-        res.status(500).json({ error: 'Error cargando tienda: ' + e.message });
-    }
+        const r = await fetch(`${BOT_URL}/tienda`);
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
 app.post('/api/bot/reload', async (req, res) => {
@@ -759,63 +720,6 @@ app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
         const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/set-pavos`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-            body: JSON.stringify(req.body)
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.get('/api/bot/friends/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/friends`, {
-            headers: { 'X-Bot-Secret': BOT_SECRET }
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/remove-friend/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/remove-friend`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-            body: JSON.stringify(req.body)
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/regalar', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/regalar`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-            body: JSON.stringify(req.body)
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/sync-gifts/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/sync-gifts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/set-slots/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/set-slots`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
             body: JSON.stringify(req.body)
