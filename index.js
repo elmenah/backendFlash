@@ -101,7 +101,7 @@ async function scanAndRetryPendingGifts() {
             `&offer_id=not.is.null` +
             `&entregado=not.eq.true` +
             `&pedidos.estado=eq.Pagado` +
-            `&order=created_at.asc` +
+           
             `&limit=10`;
 
         const resp = await fetch(url, {
