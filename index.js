@@ -90,6 +90,105 @@ async function triggerBotGifts(orderId) {
 }
 
 // ==========================================
+// SCANNER DE PEDIDOS PENDIENTES
+// ==========================================
+async function scanAndRetryPendingGifts() {
+    console.log('[BotLog][RETRY_SCAN] Iniciando escaneo de pedidos pendientes...');
+    try {
+        // Consultar pedido_items: con offer_id, no entregados, pedido Pagado, menos de 3 intentos
+        const url = `${SUPABASE_URL}/rest/v1/pedido_items` +
+            `?select=id,nombre_producto,offer_id,pavos,bot_gift_attempts,pedidos!inner(estado,username_fortnite)` +
+            `&offer_id=not.is.null` +
+            `&entregado=not.eq.true` +
+            `&pedidos.estado=eq.Pagado` +
+            `&order=created_at.asc` +
+            `&limit=10`;
+
+        const resp = await fetch(url, {
+            headers: {
+                'apikey': SUPABASE_SERVICE_KEY,
+                'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            }
+        });
+
+        if (!resp.ok) {
+            const text = await resp.text();
+            console.log(`[BotLog][RETRY_SCAN] Error consultando Supabase: ${resp.status} ${text.slice(0, 200)}`);
+            return;
+        }
+
+        const items = await resp.json();
+        const total = items.length;
+        // Filtrar: máximo 3 intentos
+        const pending = items.filter(i => (i.bot_gift_attempts || 0) < 3);
+
+        console.log(`[BotLog][RETRY_SCAN] ${total} pendiente(s) encontrados, ${pending.length} reintentable(s)`);
+
+        if (pending.length === 0) return;
+
+        for (const item of pending) {
+            const pedidoInfo = item.pedidos || {};
+            const epicName = pedidoInfo.username_fortnite || '';
+            const offerId = item.offer_id || '';
+            const itemId = String(item.id || '');
+            const nombre = item.nombre_producto || '';
+            const pavos = item.pavos || 0;
+            const intentos = (item.bot_gift_attempts || 0) + 1;
+
+            if (!epicName || epicName === 'N/A' || !offerId) {
+                console.log(`[BotLog][RETRY_SCAN] Skipping "${nombre}" — sin epic_name o offer_id`);
+                continue;
+            }
+
+            console.log(`[BotLog][RETRY_SCAN] Reintentando (intento ${intentos}/3): "${nombre}" → ${epicName}`);
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+                const giftResp = await fetch(`${BOT_URL}/regalar`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Bot-Secret': BOT_SECRET,
+                    },
+                    body: JSON.stringify({
+                        epic_name: epicName,
+                        offer_id: offerId,
+                        item_id: itemId,
+                        price_vbucks: pavos,
+                    }),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeoutId);
+
+                const result = await giftResp.json();
+
+                if (giftResp.ok && result.success) {
+                    console.log(`[BotLog][RETRY_SCAN] ✅ "${nombre}" entregado a ${epicName} (bot: ${result.bot_used}, intento ${intentos})`);
+                    await supabase.from('pedido_items').update({ entregado: true }).eq('id', item.id);
+                } else {
+                    const err = result.error || 'desconocido';
+                    console.log(`[BotLog][RETRY_SCAN] ❌ "${nombre}" falló (intento ${intentos}/3): ${err}`);
+                    await supabase.from('pedido_items').update({
+                        bot_gift_attempts: intentos,
+                        bot_gift_last_error: String(err).slice(0, 500),
+                    }).eq('id', item.id);
+                }
+            } catch (e) {
+                console.log(`[BotLog][RETRY_SCAN] Error inesperado reintentando "${nombre}": ${e.message}`);
+                await supabase.from('pedido_items').update({
+                    bot_gift_attempts: intentos,
+                    bot_gift_last_error: String(e.message).slice(0, 500),
+                }).eq('id', item.id);
+            }
+        }
+    } catch (e) {
+        console.log(`[BotLog][RETRY_SCAN] Error general en scan: ${e.message}`);
+    }
+}
+
+// ==========================================
 // HELPERS
 // ==========================================
 function formatStoreExitDate(dateValue) {
@@ -731,7 +830,10 @@ app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
 app.get('/api/bot/es-amigo/:epicName', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
-        const r = await fetch(`${BOT_URL}/es-amigo/${encodeURIComponent(req.params.epicName)}`);
+        // Pasamos X-Bot-Secret para saltear el rate limit de IP en el bot
+        const r = await fetch(`${BOT_URL}/es-amigo/${encodeURIComponent(req.params.epicName)}`, {
+            headers: { 'X-Bot-Secret': BOT_SECRET }
+        });
         res.json(await r.json());
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
@@ -746,6 +848,79 @@ app.post('/api/bot/agregar', async (req, res) => {
         });
         res.json(await r.json());
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.get('/api/bot/friends/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/friends`);
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/remove-friend/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/remove-friend`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body),
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/regalar', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/regalar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body),
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/sync-gifts/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/sync-gifts`, {
+            method: 'POST',
+            headers: { 'X-Bot-Secret': BOT_SECRET },
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/set-slots/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/set-slots`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body),
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+// /api/bot/log — recibe logs del bot (VPS) y los muestra en Render
+app.post('/api/bot/log', (req, res) => {
+    const secret = req.headers['x-bot-secret'];
+    if (BOT_SECRET && secret !== BOT_SECRET) {
+        return res.status(401).json({ error: 'No autorizado' });
+    }
+    const { tipo, mensaje, datos } = req.body || {};
+    console.log(`[BotLog][${tipo || 'INFO'}] ${mensaje}`, datos ? JSON.stringify(datos) : '');
+    res.json({ ok: true });
+});
+
+// /api/bot/retry-pending — dispara el scanner manualmente desde el panel admin
+app.post('/api/bot/retry-pending', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    scanAndRetryPendingGifts(); // fire and forget
+    res.json({ ok: true, message: 'Escáner de pedidos pendientes iniciado' });
 });
 
 // ==========================================
@@ -792,4 +967,10 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Backend escuchando en puerto ${PORT}`);
     console.log(`Bot URL configurada: ${BOT_URL}`);
+    // Scanner de pedidos pendientes: primera ejecución en 30s, luego cada 5 min
+    setTimeout(() => {
+        scanAndRetryPendingGifts();
+        setInterval(scanAndRetryPendingGifts, 5 * 60 * 1000);
+    }, 30 * 1000);
+    console.log('[BotLog][RETRY_SCAN] Scanner programado — inicio en 30s, luego cada 5 min');
 });
