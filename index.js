@@ -6,7 +6,17 @@ require('dotenv').config();
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'https://tioflashstore.netlify.app')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+        return callback(new Error('Origen no permitido por CORS'));
+    }
+}));
 
 // Configurar Mercado Pago con credenciales de Chile
 const client = new MercadoPagoConfig({
@@ -25,6 +35,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 // ==========================================
 const BOT_URL = process.env.BOT_URL || 'http://localhost:8000';
 const BOT_SECRET = process.env.BOT_SECRET || '';
+const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
+const ZENOBANK_WEBHOOK_SECRET = process.env.ZENOBANK_WEBHOOK_SECRET || '';
 
 async function triggerBotGifts(orderId) {
     try {
@@ -90,95 +102,6 @@ async function triggerBotGifts(orderId) {
 }
 
 // ==========================================
-// SCANNER DE PEDIDOS PENDIENTES
-// ==========================================
-async function scanAndRetryPendingGifts() {
-    console.log('[BotLog][RETRY_SCAN] Iniciando escaneo de pedidos pendientes...');
-    try {
-        // Consultar pedido_items: con offer_id, no entregados, pedido Pagado
-        const { data: items, error } = await supabase
-            .from('pedido_items')
-            .select('id, nombre_producto, offer_id, pavos, bot_gift_attempts, pedidos!inner(estado, username_fortnite)')
-            .not('offer_id', 'is', null)
-            .not('entregado', 'eq', true)
-            .eq('pedidos.estado', 'Pagado')
-            .limit(10);
-
-        if (error) {
-            console.log(`[BotLog][RETRY_SCAN] Error consultando Supabase: ${error.message}`);
-            return;
-        }
-
-        const pending = (items || []);
-        const total = pending.length;
-
-        console.log(`[BotLog][RETRY_SCAN] ${total} pendiente(s) encontrados`);
-
-        if (pending.length === 0) return;
-
-        for (const item of pending) {
-            const pedidoInfo = item.pedidos || {};
-            const epicName = pedidoInfo.username_fortnite || '';
-            const offerId = item.offer_id || '';
-            const itemId = String(item.id || '');
-            const nombre = item.nombre_producto || '';
-            const pavos = item.pavos || 0;
-            const intentos = (item.bot_gift_attempts || 0) + 1;
-
-            if (!epicName || epicName === 'N/A' || !offerId) {
-                console.log(`[BotLog][RETRY_SCAN] Skipping "${nombre}" — sin epic_name o offer_id`);
-                continue;
-            }
-
-            console.log(`[BotLog][RETRY_SCAN] Reintentando (intento ${intentos}): "${nombre}" → ${epicName}`);
-
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 120000);
-
-                const giftResp = await fetch(`${BOT_URL}/regalar`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-Bot-Secret': BOT_SECRET,
-                    },
-                    body: JSON.stringify({
-                        epic_name: epicName,
-                        offer_id: offerId,
-                        item_id: itemId,
-                        price_vbucks: pavos,
-                    }),
-                    signal: controller.signal,
-                });
-                clearTimeout(timeoutId);
-
-                const result = await giftResp.json();
-
-                if (giftResp.ok && result.success) {
-                    console.log(`[BotLog][RETRY_SCAN] ✅ "${nombre}" entregado a ${epicName} (bot: ${result.bot_used}, intento ${intentos})`);
-                    await supabase.from('pedido_items').update({ entregado: true }).eq('id', item.id);
-                } else {
-                    const err = result.error || 'desconocido';
-                    console.log(`[BotLog][RETRY_SCAN] ❌ "${nombre}" falló (intento ${intentos}): ${err}`);
-                    await supabase.from('pedido_items').update({
-                        bot_gift_attempts: intentos,
-                        bot_gift_last_error: String(err).slice(0, 500),
-                    }).eq('id', item.id);
-                }
-            } catch (e) {
-                console.log(`[BotLog][RETRY_SCAN] Error inesperado reintentando "${nombre}": ${e.message}`);
-                await supabase.from('pedido_items').update({
-                    bot_gift_attempts: intentos,
-                    bot_gift_last_error: String(e.message).slice(0, 500),
-                }).eq('id', item.id);
-            }
-        }
-    } catch (e) {
-        console.log(`[BotLog][RETRY_SCAN] Error general en scan: ${e.message}`);
-    }
-}
-
-// ==========================================
 // HELPERS
 // ==========================================
 function formatStoreExitDate(dateValue) {
@@ -198,6 +121,44 @@ function getStoreExitDate(item) {
         item.fecha_fin || item.fin || item.out_date || item.outDate ||
         item.sale_end_date || item.store_exit_date || null
     );
+}
+
+function getItemPavos(item) {
+    if (!item || typeof item !== 'object') return 0;
+    const rawValue = item.pavos ?? item.precio_vbucks ?? item.vbucks ?? item.cantidad_pavos ?? 0;
+    const pavos = Number(rawValue);
+    return Number.isFinite(pavos) ? pavos : 0;
+}
+
+function formatPavos(value) {
+    return new Intl.NumberFormat('es-CL').format(Number(value) || 0);
+}
+
+function parsePositiveAmount(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return Math.round(parsed);
+}
+
+function isExpectedWebhookSecret(req, expectedSecret) {
+    if (!expectedSecret) return true;
+    const headerSecret = req.headers['x-webhook-secret'];
+    const auth = req.headers.authorization;
+    const bearerSecret = typeof auth === 'string' && auth.startsWith('Bearer ')
+        ? auth.slice(7)
+        : '';
+    return String(headerSecret || bearerSecret || '') === expectedSecret;
+}
+
+async function fetchPedidoConItems(pedidoId) {
+    const { data, error } = await supabase
+        .from('pedidos')
+        .select('*, pedido_items(*)')
+        .eq('id', pedidoId)
+        .single();
+
+    if (error || !data) return null;
+    return data;
 }
 
 // ==========================================
@@ -247,7 +208,10 @@ app.post('/api/mercadopago-order', async (req, res) => {
             });
         }
 
-        const unitPrice = Math.round(Number(amount));
+        const unitPrice = parsePositiveAmount(amount);
+        if (!unitPrice) {
+            return res.status(400).json({ error: 'Monto inválido' });
+        }
         console.log('Creando preferencia con:', { orderId, subject, unitPrice, email });
 
         const preference = new Preference(client);
@@ -278,6 +242,10 @@ app.post('/api/mercadopago-order', async (req, res) => {
 
 app.post('/api/mercadopago-webhook', async (req, res) => {
     try {
+        if (!isExpectedWebhookSecret(req, MERCADOPAGO_WEBHOOK_SECRET)) {
+            return res.status(401).send('No autorizado');
+        }
+
         const { type, data } = req.body;
         console.log('Webhook recibido:', { type, data });
 
@@ -323,15 +291,15 @@ app.get('/mercadopago-success', async (req, res) => {
     try {
         let wspParams = '';
         if (pedidoId) {
-            const { data: pedidoData, error: pedidoError } = await supabase
-                .from('pedidos')
-                .select('*, pedido_items(*)')
-                .eq('id', pedidoId)
-                .single();
+            const pedidoData = await fetchPedidoConItems(pedidoId);
+            if (pedidoData?.estado !== 'Pagado') {
+                return res.redirect('https://tioflashstore.netlify.app/pago-pendiente');
+            }
 
-            if (!pedidoError && pedidoData) {
+            if (pedidoData) {
                 const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
                 const total = pedidoData.pedido_items.reduce((sum, item) => sum + (item.precio_unitario * item.cantidad), 0);
+                const totalPavos = pedidoData.pedido_items.reduce((sum, item) => sum + (getItemPavos(item) * item.cantidad), 0);
 
                 let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
                 mensaje += `========================================%0A`;
@@ -339,17 +307,19 @@ app.get('/mercadopago-success', async (req, res) => {
                 mensaje += `========================================%0A`;
                 pedidoData.pedido_items.forEach((item) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+                    const itemPavos = getItemPavos(item);
+                    if (itemPavos > 0) mensaje += `  💎 ${formatPavos(itemPavos)} pavos c/u (${formatPavos(itemPavos * item.cantidad)} total)%0A`;
                     if (item.imagen_url) mensaje += `  🖼️ ${item.imagen_url}%0A`;
                     const storeExitDate = getStoreExitDate(item);
                     if (storeExitDate) mensaje += `  📅 Se va de la tienda: ${formatStoreExitDate(storeExitDate)}%0A`;
                 });
                 mensaje += `========================================%0A`;
                 mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
+                if (totalPavos > 0) mensaje += `💎 Total de pavos: ${formatPavos(totalPavos)}%0A`;
                 mensaje += `💳 Método: Mercado Pago%0A`;
                 mensaje += `========================================%0A`;
                 mensaje += `📧 Email: ${pedidoData.correo}%0A`;
                 mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
-                mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
 
                 if (pedidoData.xbox_option) {
                     mensaje += `------------------------------------%0A`;
@@ -357,7 +327,6 @@ app.get('/mercadopago-success', async (req, res) => {
                     mensaje += `Opción: ${pedidoData.xbox_option}%0A`;
                     if (pedidoData.xbox_option === 'cuenta-existente') {
                         mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
-                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                     } else {
                         mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
                     }
@@ -426,8 +395,13 @@ app.post('/api/zenobank-checkout', async (req, res) => {
             return res.status(400).json({ error: 'Faltan parámetros requeridos', required: ['orderId', 'subject', 'amount', 'email'] });
         }
 
+        const amountClp = parsePositiveAmount(amount);
+        if (!amountClp) {
+            return res.status(400).json({ error: 'Monto inválido' });
+        }
+
         const rate = await getExchangeRate();
-        const amountUSD = (Number(amount) / rate).toFixed(2);
+        const amountUSD = (amountClp / rate).toFixed(2);
         console.log('Creando checkout Zenobank:', { orderId, amountUSD, rate, email });
 
         const response = await fetch('https://api.zenobank.io/api/v1/checkouts', {
@@ -458,6 +432,10 @@ app.post('/api/zenobank-checkout', async (req, res) => {
 
 app.post('/api/zenobank-webhook', async (req, res) => {
     try {
+        if (!isExpectedWebhookSecret(req, ZENOBANK_WEBHOOK_SECRET)) {
+            return res.status(401).send('No autorizado');
+        }
+
         const payload = req.body;
         console.log('Webhook Zenobank recibido:', payload);
 
@@ -499,18 +477,15 @@ app.get('/zenobank-success', async (req, res) => {
         let wspParams = '';
 
         if (pedidoId) {
-            await supabase.from('pedidos').update({ estado: 'Pagado' }).eq('id', pedidoId);
-            triggerBotGifts(pedidoId);
+            const pedidoData = await fetchPedidoConItems(pedidoId);
+            if (pedidoData?.estado !== 'Pagado') {
+                return res.redirect('https://tioflashstore.netlify.app/pago-pendiente');
+            }
 
-            const { data: pedidoData, error: pedidoError } = await supabase
-                .from('pedidos')
-                .select('*, pedido_items(*)')
-                .eq('id', pedidoId)
-                .single();
-
-            if (!pedidoError && pedidoData) {
+            if (pedidoData) {
                 const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
                 const total = pedidoData.pedido_items.reduce((sum, item) => sum + (item.precio_unitario * item.cantidad), 0);
+                const totalPavos = pedidoData.pedido_items.reduce((sum, item) => sum + (getItemPavos(item) * item.cantidad), 0);
 
                 let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
                 mensaje += `========================================%0A`;
@@ -518,23 +493,24 @@ app.get('/zenobank-success', async (req, res) => {
                 mensaje += `========================================%0A`;
                 pedidoData.pedido_items.forEach((item) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+                    const itemPavos = getItemPavos(item);
+                    if (itemPavos > 0) mensaje += `  💎 ${formatPavos(itemPavos)} pavos c/u (${formatPavos(itemPavos * item.cantidad)} total)%0A`;
                     if (item.imagen_url) mensaje += `  🖼️ ${item.imagen_url}%0A`;
                     const storeExitDate = getStoreExitDate(item);
                     if (storeExitDate) mensaje += `  📅 Se va de la tienda: ${formatStoreExitDate(storeExitDate)}%0A`;
                 });
                 mensaje += `========================================%0A`;
                 mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
+                if (totalPavos > 0) mensaje += `💎 Total de pavos: ${formatPavos(totalPavos)}%0A`;
                 mensaje += `💳 Método: Criptomonedas (Zenobank)%0A`;
                 mensaje += `========================================%0A`;
                 mensaje += `📧 Email: ${pedidoData.correo}%0A`;
                 mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
-                mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
                 if (pedidoData.xbox_option) {
                     mensaje += `------------------------------------%0A`;
                     mensaje += `🎮 Fortnite Crew: ${pedidoData.xbox_option}%0A`;
                     if (pedidoData.xbox_option === 'cuenta-existente') {
                         mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
-                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                     }
                 }
                 if (pedidoData.crunchyroll_option) mensaje += `========================================%0A🎬 Crunchyroll: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
@@ -586,8 +562,13 @@ app.post('/api/paypal/create-order', async (req, res) => {
             return res.status(400).json({ error: 'Faltan parámetros requeridos', required: ['orderId', 'amount', 'email'] });
         }
 
+        const amountClp = parsePositiveAmount(amount);
+        if (!amountClp) {
+            return res.status(400).json({ error: 'Monto inválido' });
+        }
+
         const rate = await getExchangeRate();
-        const baseUSD = Number((Number(amount) / rate).toFixed(2));
+        const baseUSD = Number((amountClp / rate).toFixed(2));
         const amountUSD = ((baseUSD + 0.30) / (1 - 0.054)).toFixed(2);
         console.log('Creando orden PayPal:', { orderId, baseUSD, amountUSD, rate, email });
 
@@ -669,30 +650,42 @@ app.get('/paypal-success', async (req, res) => {
     const { order, email, token } = req.query;
     console.log('PayPal pago exitoso:', { order, email, token });
     try {
+        const pedidoId = order;
+
         if (token) {
             const accessToken = await getPayPalAccessToken();
-            await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}/capture`, {
+            const captureResponse = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}/capture`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` }
             });
-        }
 
-        const pedidoId = order;
+            const captureData = await captureResponse.json();
+            if (captureData.status === 'COMPLETED') {
+                const referenceId = captureData.purchase_units?.[0]?.reference_id;
+                if (referenceId && (!pedidoId || String(referenceId) === String(pedidoId))) {
+                    const { error } = await supabase
+                        .from('pedidos')
+                        .update({ estado: 'Pagado' })
+                        .eq('id', referenceId);
+
+                    if (!error) {
+                        triggerBotGifts(referenceId);
+                    }
+                }
+            }
+        }
         let wspParams = '';
 
         if (pedidoId) {
-            await supabase.from('pedidos').update({ estado: 'Pagado' }).eq('id', pedidoId);
-            triggerBotGifts(pedidoId);
+            const pedidoData = await fetchPedidoConItems(pedidoId);
+            if (pedidoData?.estado !== 'Pagado') {
+                return res.redirect('https://tioflashstore.netlify.app/pago-pendiente');
+            }
 
-            const { data: pedidoData, error: pedidoError } = await supabase
-                .from('pedidos')
-                .select('*, pedido_items(*)')
-                .eq('id', pedidoId)
-                .single();
-
-            if (!pedidoError && pedidoData) {
+            if (pedidoData) {
                 const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
                 const total = pedidoData.pedido_items.reduce((sum, item) => sum + (item.precio_unitario * item.cantidad), 0);
+                const totalPavos = pedidoData.pedido_items.reduce((sum, item) => sum + (getItemPavos(item) * item.cantidad), 0);
 
                 let mensaje = `🎉 ¡PAGO EXITOSO! - Tio Flashstore%0A`;
                 mensaje += `========================================%0A`;
@@ -700,23 +693,24 @@ app.get('/paypal-success', async (req, res) => {
                 mensaje += `========================================%0A`;
                 pedidoData.pedido_items.forEach((item) => {
                     mensaje += `• ${item.nombre_producto} x${item.cantidad} - ${CLP.format(item.precio_unitario)}%0A`;
+                    const itemPavos = getItemPavos(item);
+                    if (itemPavos > 0) mensaje += `  💎 ${formatPavos(itemPavos)} pavos c/u (${formatPavos(itemPavos * item.cantidad)} total)%0A`;
                     if (item.imagen_url) mensaje += `  🖼️ ${item.imagen_url}%0A`;
                     const storeExitDate = getStoreExitDate(item);
                     if (storeExitDate) mensaje += `  📅 Se va de la tienda: ${formatStoreExitDate(storeExitDate)}%0A`;
                 });
                 mensaje += `========================================%0A`;
                 mensaje += `💰 Total pagado: ${CLP.format(total)}%0A`;
+                if (totalPavos > 0) mensaje += `💎 Total de pavos: ${formatPavos(totalPavos)}%0A`;
                 mensaje += `💳 Método: PayPal%0A`;
                 mensaje += `========================================%0A`;
                 mensaje += `📧 Email: ${pedidoData.correo}%0A`;
                 mensaje += `🎮 Usuario Fortnite: ${pedidoData.username_fortnite}%0A`;
-                mensaje += `🆔 RUT: ${pedidoData.rut}%0A`;
                 if (pedidoData.xbox_option) {
                     mensaje += `------------------------------------%0A`;
                     mensaje += `🎮 Fortnite Crew: ${pedidoData.xbox_option}%0A`;
                     if (pedidoData.xbox_option === 'cuenta-existente') {
                         mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
-                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                     }
                 }
                 if (pedidoData.crunchyroll_option) mensaje += `========================================%0A🎬 Crunchyroll: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
@@ -773,9 +767,48 @@ app.get('/api/bot/health', async (req, res) => {
 app.get('/api/bot/tienda', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
-        const r = await fetch(`${BOT_URL}/tienda`);
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+        const r = await fetch('https://fortnite-api.com/v2/shop?language=es');
+        const data = await r.json();
+
+        const items = [];
+        for (const entry of (data.data?.entries || [])) {
+            const offerId = entry.offerId;
+            const precio = entry.finalPrice ?? entry.regularPrice ?? 0;
+            if (!offerId || precio === 0 || entry.giftable === false) continue;
+
+            const categoria = entry.layout?.name || 'Otros';
+            if (categoria === 'Pistas de improvisación') continue;
+
+            let nombre = '';
+            let imagen = null;
+
+            if (entry.bundle?.name) {
+                nombre = entry.bundle.name;
+                imagen = entry.bundle.image || null;
+            } else if (entry.brItems?.length > 0) {
+                nombre = entry.brItems[0].name;
+                imagen = entry.brItems[0].images?.featured || entry.brItems[0].images?.icon || null;
+            } else if (entry.tracks?.length > 0) {
+                nombre = entry.tracks[0].title;
+            } else if (entry.instruments?.length > 0) {
+                nombre = entry.instruments[0].name;
+            }
+            if (!nombre) continue;
+
+            items.push({
+                nombre,
+                offer_id: offerId,
+                precio_vbucks: precio,
+                seccion: categoria,
+                imagen,
+            });
+        }
+
+        items.sort((a, b) => a.precio_vbucks - b.precio_vbucks);
+        res.json({ total: items.length, items });
+    } catch (e) {
+        res.status(500).json({ error: 'Error cargando tienda: ' + e.message });
+    }
 });
 
 app.post('/api/bot/reload', async (req, res) => {
@@ -817,10 +850,66 @@ app.post('/api/bot/set-pavos/:accountId', async (req, res) => {
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
+app.get('/api/bot/friends/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/friends`, {
+            headers: { 'X-Bot-Secret': BOT_SECRET }
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/remove-friend/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/remove-friend`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/regalar', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/regalar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/sync-gifts/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/sync-gifts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
+app.post('/api/bot/set-slots/:accountId', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/set-slots`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+            body: JSON.stringify(req.body)
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
+});
+
 app.get('/api/bot/es-amigo/:epicName', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
-        // Pasamos X-Bot-Secret para saltear el rate limit de IP en el bot
         const r = await fetch(`${BOT_URL}/es-amigo/${encodeURIComponent(req.params.epicName)}`, {
             headers: { 'X-Bot-Secret': BOT_SECRET }
         });
@@ -840,77 +929,64 @@ app.post('/api/bot/agregar', async (req, res) => {
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
-app.get('/api/bot/friends/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/friends`);
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
+// ==========================================
+// BOT ACTIVITY LOG
+// ==========================================
 
-app.post('/api/bot/remove-friend/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/remove-friend`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-            body: JSON.stringify(req.body),
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/regalar', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/regalar`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-            body: JSON.stringify(req.body),
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/sync-gifts/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/sync-gifts`, {
-            method: 'POST',
-            headers: { 'X-Bot-Secret': BOT_SECRET },
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-app.post('/api/bot/set-slots/:accountId', async (req, res) => {
-    if (!await verifyAdmin(req, res)) return;
-    try {
-        const r = await fetch(`${BOT_URL}/bots/${req.params.accountId}/set-slots`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-            body: JSON.stringify(req.body),
-        });
-        res.json(await r.json());
-    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
-});
-
-// /api/bot/log — recibe logs del bot (VPS) y los muestra en Render
-app.post('/api/bot/log', (req, res) => {
+// POST /api/bot/log — recibe eventos del bot (VPS) y los muestra en logs de Render + Supabase
+app.post('/api/bot/log', async (req, res) => {
     const secret = req.headers['x-bot-secret'];
-    if (BOT_SECRET && secret !== BOT_SECRET) {
+    if (!BOT_SECRET || secret !== BOT_SECRET) {
         return res.status(401).json({ error: 'No autorizado' });
     }
-    const { tipo, mensaje, datos } = req.body || {};
+    const { tipo, mensaje, datos } = req.body;
+    const timestamp = new Date().toISOString();
+
+    // Log visible en Render dashboard
     console.log(`[BotLog][${tipo || 'INFO'}] ${mensaje}`, datos ? JSON.stringify(datos) : '');
-    res.json({ ok: true });
+
+    // Guardar en Supabase tabla bot_logs (si existe)
+    try {
+        await supabase.from('bot_logs').insert([{
+            tipo: tipo || 'INFO',
+            mensaje,
+            datos: datos || null,
+            created_at: timestamp,
+        }]);
+    } catch (e) {
+        // Si la tabla no existe, ignorar silenciosamente
+    }
+
+    res.json({ ok: true, timestamp });
 });
 
-// /api/bot/retry-pending — dispara el scanner manualmente desde el panel admin
+// GET /api/bot/logs — devuelve los últimos logs del bot para el Dashboard
+app.get('/api/bot/logs', async (req, res) => {
+    if (!await verifyAdmin(req, res)) return;
+    try {
+        const limit = parseInt(req.query.limit) || 50;
+        const { data, error } = await supabase
+            .from('bot_logs')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(limit);
+        if (error) throw error;
+        res.json({ logs: data || [] });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /api/bot/retry-pending — dispara manualmente el escáner de pedidos pendientes
 app.post('/api/bot/retry-pending', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
-    scanAndRetryPendingGifts(); // fire and forget
-    res.json({ ok: true, message: 'Escáner de pedidos pendientes iniciado' });
+    try {
+        const r = await fetch(`${BOT_URL}/retry-pending`, {
+            method: 'POST',
+            headers: { 'X-Bot-Secret': BOT_SECRET }
+        });
+        res.json(await r.json());
+    } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
 // ==========================================
@@ -957,10 +1033,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Backend escuchando en puerto ${PORT}`);
     console.log(`Bot URL configurada: ${BOT_URL}`);
-    // Scanner de pedidos pendientes: primera ejecución en 30s, luego cada 5 min
-    setTimeout(() => {
-        scanAndRetryPendingGifts();
-        setInterval(scanAndRetryPendingGifts, 5 * 60 * 1000);
-    }, 30 * 1000);
-    console.log('[BotLog][RETRY_SCAN] Scanner programado — inicio en 30s, luego cada 5 min');
 });
