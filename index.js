@@ -101,6 +101,69 @@ async function triggerBotGifts(orderId) {
     }
 }
 
+async function scanAndRetryPendingGifts() {
+    console.log('[BotLog][RETRY_SCAN] Iniciando escaneo de pedidos pendientes...');
+    try {
+        const healthData = await fetch(`${BOT_URL}/health`).then(r => r.json()).catch(() => ({ bots_online: 0 }));
+        if (!healthData || healthData.bots_online === 0) {
+            console.log('[BotLog][RETRY_SCAN] No hay bots online. Saltando escaneo.');
+            return;
+        }
+
+        const { data: items, error } = await supabase
+            .from('pedido_items')
+            .select('id, nombre_producto, offer_id, pavos, bot_gift_attempts, pedidos!inner(id, estado, username_fortnite)')
+            .not('offer_id', 'is', null)
+            .not('entregado', 'eq', true)
+            .eq('pedidos.estado', 'Pagado')
+            .limit(10);
+
+        if (error) {
+            console.log('[BotLog][RETRY_SCAN] Error consultando pedidos:', error.message);
+            return;
+        }
+        if (!items || items.length === 0) {
+            console.log('[BotLog][RETRY_SCAN] Sin pedidos pendientes.');
+            return;
+        }
+
+        console.log(`[BotLog][RETRY_SCAN] Encontrados ${items.length} item(s) pendientes.`);
+
+        for (const item of items) {
+            const epicName = item.pedidos?.username_fortnite;
+            const orderId = item.pedidos?.id;
+            if (!epicName || epicName === 'N/A') continue;
+
+            try {
+                const response = await fetch(`${BOT_URL}/regalar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
+                    body: JSON.stringify({
+                        epic_name: epicName,
+                        offer_id: item.offer_id,
+                        item_id: String(item.id),
+                        price_vbucks: item.pavos || 0,
+                    }),
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    console.log(`[BotLog][RETRY_SCAN] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
+                    await supabase.from('pedido_items').update({ entregado: true }).eq('id', item.id);
+                } else {
+                    console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${result.error}`);
+                    await supabase.from('pedido_items').update({ bot_gift_attempts: (item.bot_gift_attempts || 0) + 1 }).eq('id', item.id);
+                }
+            } catch (e) {
+                console.log(`[BotLog][RETRY_SCAN] Error item ${item.id}:`, e.message);
+            }
+        }
+    } catch (e) {
+        console.log('[BotLog][RETRY_SCAN] Error general:', e.message);
+    }
+}
+
 // ==========================================
 // HELPERS
 // ==========================================
@@ -1033,4 +1096,8 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Backend escuchando en puerto ${PORT}`);
     console.log(`Bot URL configurada: ${BOT_URL}`);
+    setTimeout(() => {
+        scanAndRetryPendingGifts();
+        setInterval(scanAndRetryPendingGifts, 5 * 60 * 1000);
+    }, 30 * 1000);
 });
