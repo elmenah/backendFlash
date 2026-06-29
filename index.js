@@ -38,6 +38,20 @@ const BOT_SECRET = process.env.BOT_SECRET || '';
 const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
 const ZENOBANK_WEBHOOK_SECRET = process.env.ZENOBANK_WEBHOOK_SECRET || '';
 
+const N8N_WEBHOOK_URL = 'https://n8n.centralflash.me/webhook/6af3459f-1379-4c41-a4e4-04acb0cf9c9d';
+
+async function notifyN8n(payload) {
+    try {
+        await fetch(N8N_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+    } catch (e) {
+        console.log('[N8N] Error enviando notificación:', e.message);
+    }
+}
+
 async function triggerBotGifts(orderId) {
     try {
         const { data: pedido, error: pedidoError } = await supabase
@@ -85,10 +99,12 @@ async function triggerBotGifts(orderId) {
 
                 if (response.ok && result.success) {
                     console.log(`[Bot] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
+                    const deliveredAt = new Date().toISOString();
                     await supabase
                         .from('pedido_items')
-                        .update({ entregado: true, delivered_at: new Date().toISOString() })
+                        .update({ entregado: true, delivered_at: deliveredAt })
                         .eq('id', item.id);
+                    notifyN8n({ producto: item.nombre_producto, usuario_fortnite: epicName, pavos: item.pavos || 0, pedido_id: pedido.id?.slice(0, 8), delivered_at: new Date(deliveredAt).toLocaleString('es-CL'), via: 'Automático (pago)' });
                 } else {
                     console.error(`[Bot] Error enviando regalo ${item.nombre_producto}: ${result.error}`);
                 }
@@ -155,7 +171,9 @@ async function scanAndRetryPendingGifts() {
 
                 if (response.ok && result.success) {
                     console.log(`[BotLog][RETRY_SCAN] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
-                    await supabase.from('pedido_items').update({ entregado: true, delivered_at: new Date().toISOString() }).eq('id', item.id);
+                    const deliveredAt = new Date().toISOString();
+                    await supabase.from('pedido_items').update({ entregado: true, delivered_at: deliveredAt }).eq('id', item.id);
+                    notifyN8n({ producto: item.nombre_producto, usuario_fortnite: epicName, pavos: item.pavos || 0, pedido_id: item.pedidos?.id?.slice(0, 8), delivered_at: new Date(deliveredAt).toLocaleString('es-CL'), via: 'Automático (scanner)' });
                 } else {
                     const errMsg = result.error || '';
                     console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${errMsg}`);
@@ -962,8 +980,10 @@ app.post('/api/bot/regalar', async (req, res) => {
         });
         const result = await r.json();
         if (r.ok && result.success && req.body.item_id) {
-            await supabase.from('pedido_items').update({ entregado: true, delivered_at: new Date().toISOString() }).eq('id', req.body.item_id);
+            const deliveredAt = new Date().toISOString();
+            await supabase.from('pedido_items').update({ entregado: true, delivered_at: deliveredAt }).eq('id', req.body.item_id);
             console.log(`[AdminGift] pedido_item ${req.body.item_id} marcado como entregado`);
+            notifyN8n({ producto: req.body.nombre_producto || req.body.offer_id, usuario_fortnite: req.body.epic_name, pavos: req.body.price_vbucks || 0, pedido_id: req.body.item_id?.slice(0, 8), delivered_at: new Date(deliveredAt).toLocaleString('es-CL'), via: 'Manual (admin)' });
         }
         res.json(result);
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
