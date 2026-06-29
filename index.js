@@ -943,7 +943,12 @@ app.post('/api/bot/regalar', async (req, res) => {
             headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
             body: JSON.stringify(req.body)
         });
-        res.json(await r.json());
+        const result = await r.json();
+        if (r.ok && result.success && req.body.item_id) {
+            await supabase.from('pedido_items').update({ entregado: true }).eq('id', req.body.item_id);
+            console.log(`[AdminGift] pedido_item ${req.body.item_id} marcado como entregado`);
+        }
+        res.json(result);
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
