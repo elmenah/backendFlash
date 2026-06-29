@@ -160,13 +160,17 @@ async function scanAndRetryPendingGifts() {
                     const errMsg = result.error || '';
                     console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${errMsg}`);
 
-                    // Si el bot llegó al límite de regalos, no tiene sentido seguir con los demás items
+                    // Errores temporales — parar sin contar intento fallido
                     if (errMsg.includes('gift_limit_reached') || errMsg.includes('No hay bots online')) {
                         console.log('[BotLog][RETRY_SCAN] Deteniendo escaneo — sin slots disponibles.');
                         break;
                     }
 
-                    await supabase.from('pedido_items').update({ bot_gift_attempts: (item.bot_gift_attempts || 0) + 1 }).eq('id', item.id);
+                    // Solo contar como intento fallido si es un error permanente (no amigo, usuario incorrecto, etc.)
+                    const esPermanente = errMsg.includes('no es amigo') || errMsg.includes('no encontrado') || errMsg.includes('not found');
+                    if (esPermanente) {
+                        await supabase.from('pedido_items').update({ bot_gift_attempts: (item.bot_gift_attempts || 0) + 1 }).eq('id', item.id);
+                    }
                 }
             } catch (e) {
                 console.log(`[BotLog][RETRY_SCAN] Error item ${item.id}:`, e.message);
