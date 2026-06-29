@@ -131,8 +131,13 @@ async function scanAndRetryPendingGifts() {
 
         for (const item of items) {
             const epicName = item.pedidos?.username_fortnite;
-            const orderId = item.pedidos?.id;
             if (!epicName || epicName === 'N/A') continue;
+
+            // Skip items que fallaron demasiado (probablemente no arreglables automáticamente)
+            if ((item.bot_gift_attempts || 0) >= 5) {
+                console.log(`[BotLog][RETRY_SCAN] Saltando "${item.nombre_producto}" — demasiados intentos fallidos (${item.bot_gift_attempts})`);
+                continue;
+            }
 
             try {
                 const response = await fetch(`${BOT_URL}/regalar`, {
@@ -152,7 +157,15 @@ async function scanAndRetryPendingGifts() {
                     console.log(`[BotLog][RETRY_SCAN] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
                     await supabase.from('pedido_items').update({ entregado: true, delivered_at: new Date().toISOString() }).eq('id', item.id);
                 } else {
-                    console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${result.error}`);
+                    const errMsg = result.error || '';
+                    console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${errMsg}`);
+
+                    // Si el bot llegó al límite de regalos, no tiene sentido seguir con los demás items
+                    if (errMsg.includes('gift_limit_reached') || errMsg.includes('No hay bots online')) {
+                        console.log('[BotLog][RETRY_SCAN] Deteniendo escaneo — sin slots disponibles.');
+                        break;
+                    }
+
                     await supabase.from('pedido_items').update({ bot_gift_attempts: (item.bot_gift_attempts || 0) + 1 }).eq('id', item.id);
                 }
             } catch (e) {
