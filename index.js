@@ -87,7 +87,7 @@ async function triggerBotGifts(orderId) {
                     console.log(`[Bot] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
                     await supabase
                         .from('pedido_items')
-                        .update({ entregado: true })
+                        .update({ entregado: true, delivered_at: new Date().toISOString() })
                         .eq('id', item.id);
                 } else {
                     console.error(`[Bot] Error enviando regalo ${item.nombre_producto}: ${result.error}`);
@@ -150,7 +150,7 @@ async function scanAndRetryPendingGifts() {
 
                 if (response.ok && result.success) {
                     console.log(`[BotLog][RETRY_SCAN] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
-                    await supabase.from('pedido_items').update({ entregado: true }).eq('id', item.id);
+                    await supabase.from('pedido_items').update({ entregado: true, delivered_at: new Date().toISOString() }).eq('id', item.id);
                 } else {
                     console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${result.error}`);
                     await supabase.from('pedido_items').update({ bot_gift_attempts: (item.bot_gift_attempts || 0) + 1 }).eq('id', item.id);
@@ -945,7 +945,7 @@ app.post('/api/bot/regalar', async (req, res) => {
         });
         const result = await r.json();
         if (r.ok && result.success && req.body.item_id) {
-            await supabase.from('pedido_items').update({ entregado: true }).eq('id', req.body.item_id);
+            await supabase.from('pedido_items').update({ entregado: true, delivered_at: new Date().toISOString() }).eq('id', req.body.item_id);
             console.log(`[AdminGift] pedido_item ${req.body.item_id} marcado como entregado`);
         }
         res.json(result);
