@@ -42,6 +42,7 @@ const N8N_WEBHOOK_URL = 'https://n8n.centralflash.me/webhook/6af3459f-1379-4c41-
 
 async function notifyN8n(payload) {
     try {
+        if (payload.producto) payload.producto = payload.producto.replace(/"/g, "'");
         await fetch(N8N_WEBHOOK_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
