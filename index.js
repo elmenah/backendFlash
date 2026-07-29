@@ -38,21 +38,6 @@ const BOT_SECRET = process.env.BOT_SECRET || '';
 const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
 const ZENOBANK_WEBHOOK_SECRET = process.env.ZENOBANK_WEBHOOK_SECRET || '';
 
-const N8N_WEBHOOK_URL = 'https://n8n.centralflash.me/webhook/6af3459f-1379-4c41-a4e4-04acb0cf9c9d';
-
-async function notifyN8n(payload) {
-    try {
-        if (payload.producto) payload.producto = payload.producto.replace(/"/g, "'");
-        await fetch(N8N_WEBHOOK_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-    } catch (e) {
-        console.log('[N8N] Error enviando notificación:', e.message);
-    }
-}
-
 async function triggerBotGifts(orderId) {
     try {
         const { data: pedido, error: pedidoError } = await supabase
@@ -100,12 +85,10 @@ async function triggerBotGifts(orderId) {
 
                 if (response.ok && result.success) {
                     console.log(`[Bot] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
-                    const deliveredAt = new Date().toISOString();
                     await supabase
                         .from('pedido_items')
-                        .update({ entregado: true, delivered_at: deliveredAt })
+                        .update({ entregado: true })
                         .eq('id', item.id);
-                    notifyN8n({ producto: item.nombre_producto, usuario_fortnite: epicName, pavos: item.pavos || 0, pedido_id: pedido.id?.slice(0, 8), delivered_at: new Date(deliveredAt).toLocaleString('es-CL'), via: 'Automático (pago)' });
                 } else {
                     console.error(`[Bot] Error enviando regalo ${item.nombre_producto}: ${result.error}`);
                 }
@@ -115,88 +98,6 @@ async function triggerBotGifts(orderId) {
         }
     } catch (e) {
         console.error('[Bot] Error en triggerBotGifts:', e.message);
-    }
-}
-
-async function scanAndRetryPendingGifts() {
-    console.log('[BotLog][RETRY_SCAN] Iniciando escaneo de pedidos pendientes...');
-    try {
-        const healthData = await fetch(`${BOT_URL}/health`).then(r => r.json()).catch(() => ({ bots_online: 0 }));
-        if (!healthData || healthData.bots_online === 0) {
-            console.log('[BotLog][RETRY_SCAN] No hay bots online. Saltando escaneo.');
-            return;
-        }
-
-        const { data: items, error } = await supabase
-            .from('pedido_items')
-            .select('id, nombre_producto, offer_id, pavos, bot_gift_attempts, pedidos!inner(id, estado, username_fortnite)')
-            .not('offer_id', 'is', null)
-            .not('entregado', 'eq', true)
-            .eq('pedidos.estado', 'Pagado')
-            .limit(10);
-
-        if (error) {
-            console.log('[BotLog][RETRY_SCAN] Error consultando pedidos:', error.message);
-            return;
-        }
-        if (!items || items.length === 0) {
-            console.log('[BotLog][RETRY_SCAN] Sin pedidos pendientes.');
-            return;
-        }
-
-        console.log(`[BotLog][RETRY_SCAN] Encontrados ${items.length} item(s) pendientes.`);
-
-        for (const item of items) {
-            const epicName = item.pedidos?.username_fortnite;
-            if (!epicName || epicName === 'N/A') continue;
-
-            // Skip items que fallaron demasiado (probablemente no arreglables automáticamente)
-            if ((item.bot_gift_attempts || 0) >= 5) {
-                console.log(`[BotLog][RETRY_SCAN] Saltando "${item.nombre_producto}" — demasiados intentos fallidos (${item.bot_gift_attempts})`);
-                continue;
-            }
-
-            try {
-                const response = await fetch(`${BOT_URL}/regalar`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
-                    body: JSON.stringify({
-                        epic_name: epicName,
-                        offer_id: item.offer_id,
-                        item_id: String(item.id),
-                        price_vbucks: item.pavos || 0,
-                    }),
-                });
-
-                const result = await response.json();
-
-                if (response.ok && result.success) {
-                    console.log(`[BotLog][RETRY_SCAN] Regalo enviado a ${epicName}: ${item.nombre_producto}`);
-                    const deliveredAt = new Date().toISOString();
-                    await supabase.from('pedido_items').update({ entregado: true, delivered_at: deliveredAt }).eq('id', item.id);
-                    notifyN8n({ producto: item.nombre_producto, usuario_fortnite: epicName, pavos: item.pavos || 0, pedido_id: item.pedidos?.id?.slice(0, 8), delivered_at: new Date(deliveredAt).toLocaleString('es-CL'), via: 'Automático (scanner)' });
-                } else {
-                    const errMsg = result.error || '';
-                    console.log(`[BotLog][RETRY_SCAN] Fallo regalo ${item.nombre_producto} a ${epicName}: ${errMsg}`);
-
-                    // Errores temporales — parar sin contar intento fallido
-                    if (errMsg.includes('gift_limit_reached') || errMsg.includes('No hay bots online')) {
-                        console.log('[BotLog][RETRY_SCAN] Deteniendo escaneo — sin slots disponibles.');
-                        break;
-                    }
-
-                    // Solo contar como intento fallido si es un error permanente (no amigo, usuario incorrecto, etc.)
-                    const esPermanente = errMsg.includes('no es amigo') || errMsg.includes('no encontrado') || errMsg.includes('not found');
-                    if (esPermanente) {
-                        await supabase.from('pedido_items').update({ bot_gift_attempts: (item.bot_gift_attempts || 0) + 1 }).eq('id', item.id);
-                    }
-                }
-            } catch (e) {
-                console.log(`[BotLog][RETRY_SCAN] Error item ${item.id}:`, e.message);
-            }
-        }
-    } catch (e) {
-        console.log('[BotLog][RETRY_SCAN] Error general:', e.message);
     }
 }
 
@@ -426,6 +327,7 @@ app.get('/mercadopago-success', async (req, res) => {
                     mensaje += `Opción: ${pedidoData.xbox_option}%0A`;
                     if (pedidoData.xbox_option === 'cuenta-existente') {
                         mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
+                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                     } else {
                         mensaje += `Correo Xbox: No tengo cuenta de xbox%0A`;
                     }
@@ -610,6 +512,7 @@ app.get('/zenobank-success', async (req, res) => {
                     mensaje += `🎮 Fortnite Crew: ${pedidoData.xbox_option}%0A`;
                     if (pedidoData.xbox_option === 'cuenta-existente') {
                         mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
+                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                     }
                 }
                 if (pedidoData.crunchyroll_option) mensaje += `========================================%0A🎬 Crunchyroll: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
@@ -810,6 +713,7 @@ app.get('/paypal-success', async (req, res) => {
                     mensaje += `🎮 Fortnite Crew: ${pedidoData.xbox_option}%0A`;
                     if (pedidoData.xbox_option === 'cuenta-existente') {
                         mensaje += pedidoData.xbox_email ? `Correo Xbox: ${pedidoData.xbox_email}%0A` : `Correo Xbox: No tengo cuenta de xbox%0A`;
+                        if (pedidoData.xbox_password) mensaje += `Contraseña Xbox: ${pedidoData.xbox_password}%0A`;
                     }
                 }
                 if (pedidoData.crunchyroll_option) mensaje += `========================================%0A🎬 Crunchyroll: ${pedidoData.crunchyroll_option === 'cuenta-nueva' ? 'Cuenta nueva' : 'Activación en cuenta propia'}%0A`;
@@ -979,14 +883,7 @@ app.post('/api/bot/regalar', async (req, res) => {
             headers: { 'Content-Type': 'application/json', 'X-Bot-Secret': BOT_SECRET },
             body: JSON.stringify(req.body)
         });
-        const result = await r.json();
-        if (r.ok && result.success && req.body.item_id) {
-            const deliveredAt = new Date().toISOString();
-            await supabase.from('pedido_items').update({ entregado: true, delivered_at: deliveredAt }).eq('id', req.body.item_id);
-            console.log(`[AdminGift] pedido_item ${req.body.item_id} marcado como entregado`);
-            notifyN8n({ producto: req.body.nombre_producto || req.body.offer_id, usuario_fortnite: req.body.epic_name, pavos: req.body.price_vbucks || 0, pedido_id: req.body.item_id?.slice(0, 8), delivered_at: new Date(deliveredAt).toLocaleString('es-CL'), via: 'Manual (admin)' });
-        }
-        res.json(result);
+        res.json(await r.json());
     } catch (e) { res.status(503).json({ error: 'Bot no disponible' }); }
 });
 
@@ -1139,8 +1036,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Backend escuchando en puerto ${PORT}`);
     console.log(`Bot URL configurada: ${BOT_URL}`);
-    setTimeout(() => {
-        scanAndRetryPendingGifts();
-        setInterval(scanAndRetryPendingGifts, 5 * 60 * 1000);
-    }, 30 * 1000);
 });
