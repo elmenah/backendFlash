@@ -37,6 +37,7 @@ const BOT_URL = process.env.BOT_URL || 'http://localhost:8000';
 const BOT_SECRET = process.env.BOT_SECRET || '';
 const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
 const ZENOBANK_WEBHOOK_SECRET = process.env.ZENOBANK_WEBHOOK_SECRET || '';
+const processingItems = new Set(); // ← NUEVO: items siendo procesados por triggerBotGifts
 
 async function triggerBotGifts(orderId) {
     try {
@@ -66,6 +67,7 @@ async function triggerBotGifts(orderId) {
         console.log(`[Bot] Enviando ${fortniteItems.length} regalo(s) a ${epicName} (pedido ${orderId})`);
 
         for (const item of fortniteItems) {
+            processingItems.add(String(item.id)); // ← NUEVO
             try {
                 const response = await fetch(`${BOT_URL}/regalar`, {
                     method: 'POST',
@@ -96,6 +98,8 @@ async function triggerBotGifts(orderId) {
                 }
             } catch (e) {
                 console.error(`[Bot] Error llamando al bot para item ${item.id}:`, e.message);
+            } finally {
+                processingItems.delete(String(item.id)); // ← NUEVO
             }
         }
     } catch (e) {
@@ -945,7 +949,6 @@ app.post('/api/bot/agregar', async (req, res) => {
 // BOT ACTIVITY LOG
 // ==========================================
 
-// POST /api/bot/log — recibe eventos del bot (VPS) y los muestra en logs de Render + Supabase
 app.post('/api/bot/log', async (req, res) => {
     const secret = req.headers['x-bot-secret'];
     if (!BOT_SECRET || secret !== BOT_SECRET) {
@@ -954,10 +957,8 @@ app.post('/api/bot/log', async (req, res) => {
     const { tipo, mensaje, datos } = req.body;
     const timestamp = new Date().toISOString();
 
-    // Log visible en Render dashboard
     console.log(`[BotLog][${tipo || 'INFO'}] ${mensaje}`, datos ? JSON.stringify(datos) : '');
 
-    // Guardar en Supabase tabla bot_logs (si existe)
     try {
         await supabase.from('bot_logs').insert([{
             tipo: tipo || 'INFO',
@@ -972,7 +973,6 @@ app.post('/api/bot/log', async (req, res) => {
     res.json({ ok: true, timestamp });
 });
 
-// GET /api/bot/logs — devuelve los últimos logs del bot para el Dashboard
 app.get('/api/bot/logs', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
@@ -989,7 +989,6 @@ app.get('/api/bot/logs', async (req, res) => {
     }
 });
 
-// POST /api/bot/retry-pending — dispara manualmente el escáner de pedidos pendientes
 app.post('/api/bot/retry-pending', async (req, res) => {
     if (!await verifyAdmin(req, res)) return;
     try {
@@ -1080,6 +1079,10 @@ async function scanAndRetryPendingGifts() {
             if (!epicName || epicName === 'N/A') continue;
             if ((item.bot_gift_attempts || 0) >= 5) {
                 console.log(`[BotLog][RETRY_SCAN] Saltando "${item.nombre_producto}" — demasiados intentos fallidos (${item.bot_gift_attempts})`);
+                continue;
+            }
+            if (processingItems.has(String(item.id))) { // ← NUEVO
+                console.log(`[BotLog][RETRY_SCAN] Saltando "${item.nombre_producto}" — ya siendo procesado por triggerBotGifts`);
                 continue;
             }
             try {
