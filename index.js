@@ -18,13 +18,11 @@ app.use(cors({
     }
 }));
 
-// Configurar Mercado Pago con credenciales de Chile
 const client = new MercadoPagoConfig({
     accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN,
     options: { timeout: 5000 }
 });
 
-// Configurar Supabase
 const { createClient } = require('@supabase/supabase-js');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -37,7 +35,7 @@ const BOT_URL = process.env.BOT_URL || 'http://localhost:8000';
 const BOT_SECRET = process.env.BOT_SECRET || '';
 const MERCADOPAGO_WEBHOOK_SECRET = process.env.MERCADOPAGO_WEBHOOK_SECRET || '';
 const ZENOBANK_WEBHOOK_SECRET = process.env.ZENOBANK_WEBHOOK_SECRET || '';
-const processingItems = new Set(); // ← NUEVO: items siendo procesados por triggerBotGifts
+const processingItems = new Set();
 
 async function triggerBotGifts(orderId) {
     try {
@@ -67,7 +65,7 @@ async function triggerBotGifts(orderId) {
         console.log(`[Bot] Enviando ${fortniteItems.length} regalo(s) a ${epicName} (pedido ${orderId})`);
 
         for (const item of fortniteItems) {
-            processingItems.add(String(item.id)); // ← NUEVO
+            processingItems.add(String(item.id));
             try {
                 const response = await fetch(`${BOT_URL}/regalar`, {
                     method: 'POST',
@@ -99,7 +97,7 @@ async function triggerBotGifts(orderId) {
             } catch (e) {
                 console.error(`[Bot] Error llamando al bot para item ${item.id}:`, e.message);
             } finally {
-                processingItems.delete(String(item.id)); // ← NUEVO
+                processingItems.delete(String(item.id));
             }
         }
     } catch (e) {
@@ -804,13 +802,7 @@ app.get('/api/bot/tienda', async (req, res) => {
             }
             if (!nombre) continue;
 
-            items.push({
-                nombre,
-                offer_id: offerId,
-                precio_vbucks: precio,
-                seccion: categoria,
-                imagen,
-            });
+            items.push({ nombre, offer_id: offerId, precio_vbucks: precio, seccion: categoria, imagen });
         }
 
         items.sort((a, b) => a.precio_vbucks - b.precio_vbucks);
@@ -948,7 +940,6 @@ app.post('/api/bot/agregar', async (req, res) => {
 // ==========================================
 // BOT ACTIVITY LOG
 // ==========================================
-
 app.post('/api/bot/log', async (req, res) => {
     const secret = req.headers['x-bot-secret'];
     if (!BOT_SECRET || secret !== BOT_SECRET) {
@@ -956,20 +947,10 @@ app.post('/api/bot/log', async (req, res) => {
     }
     const { tipo, mensaje, datos } = req.body;
     const timestamp = new Date().toISOString();
-
     console.log(`[BotLog][${tipo || 'INFO'}] ${mensaje}`, datos ? JSON.stringify(datos) : '');
-
     try {
-        await supabase.from('bot_logs').insert([{
-            tipo: tipo || 'INFO',
-            mensaje,
-            datos: datos || null,
-            created_at: timestamp,
-        }]);
-    } catch (e) {
-        // Si la tabla no existe, ignorar silenciosamente
-    }
-
+        await supabase.from('bot_logs').insert([{ tipo: tipo || 'INFO', mensaje, datos: datos || null, created_at: timestamp }]);
+    } catch (e) {}
     res.json({ ok: true, timestamp });
 });
 
@@ -1012,26 +993,22 @@ app.get('/api/crew-image', async (req, res) => {
         if (cachedCrewImage.url && now - cachedCrewImage.timestamp < CREW_CACHE_DURATION) {
             return res.json({ image: cachedCrewImage.url, source: 'cache' });
         }
-
         const axios = require('axios');
         const response = await axios.get('https://www.fortnite.com/fortnite-crew-subscription?lang=es-ES', {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
             timeout: 10000
         });
-
         const html = response.data;
         const match = html.match(/src="(https:\/\/cms-assets\.unrealengine\.com\/[^"]+\/output=format:webp\/[^"]+)"/);
         if (match && match[1]) {
             cachedCrewImage = { url: match[1], timestamp: now };
             return res.json({ image: match[1], source: 'live' });
         }
-
         const fallbackMatch = html.match(/src="(https:\/\/cms-assets\.unrealengine\.com\/[^"]+)"/);
         if (fallbackMatch && fallbackMatch[1]) {
             cachedCrewImage = { url: fallbackMatch[1], timestamp: now };
             return res.json({ image: fallbackMatch[1], source: 'fallback' });
         }
-
         res.status(404).json({ error: 'No se encontró imagen del Crew' });
     } catch (error) {
         console.error('Error scraping crew image:', error.message);
@@ -1055,6 +1032,45 @@ async function notifyN8n(payload) {
         console.log('[N8N] Error enviando notificación:', e.message);
     }
 }
+
+// ==========================================
+// TELEGRAM BOT ENDPOINTS (auth por BOT_SECRET)
+// ==========================================
+function requireBotSecret(req, res) {
+    if (!BOT_SECRET || req.headers['x-bot-secret'] !== BOT_SECRET) {
+        res.status(401).json({ error: 'No autorizado' });
+        return false;
+    }
+    return true;
+}
+
+app.get('/api/telegram/stats', async (req, res) => {
+    if (!requireBotSecret(req, res)) return;
+    try {
+        const stats = await fetch(`${BOT_URL}/stats`).then(r => r.json());
+        res.json(stats);
+    } catch (e) {
+        res.status(503).json({ error: 'Bot no disponible' });
+    }
+});
+
+app.get('/api/telegram/pedidos', async (req, res) => {
+    if (!requireBotSecret(req, res)) return;
+    try {
+        const limit = parseInt(req.query.limit) || 5;
+        const { data, error } = await supabase
+            .from('pedido_items')
+            .select('nombre_producto, pavos, delivered_at, pedidos(username_fortnite)')
+            .eq('entregado', true)
+            .not('delivered_at', 'is', null)
+            .order('delivered_at', { ascending: false })
+            .limit(limit);
+        if (error) throw error;
+        res.json({ pedidos: data || [] });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 async function scanAndRetryPendingGifts() {
     console.log('[BotLog][RETRY_SCAN] Iniciando escaneo de pedidos pendientes...');
@@ -1081,7 +1097,7 @@ async function scanAndRetryPendingGifts() {
                 console.log(`[BotLog][RETRY_SCAN] Saltando "${item.nombre_producto}" — demasiados intentos fallidos (${item.bot_gift_attempts})`);
                 continue;
             }
-            if (processingItems.has(String(item.id))) { // ← NUEVO
+            if (processingItems.has(String(item.id))) {
                 console.log(`[BotLog][RETRY_SCAN] Saltando "${item.nombre_producto}" — ya siendo procesado por triggerBotGifts`);
                 continue;
             }
